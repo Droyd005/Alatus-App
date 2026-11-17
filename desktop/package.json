@@ -44,7 +44,15 @@
           "!data/**",
           "!images/**",
           "!logs/**",
-          "!session/**"
+          "!session/**",
+          "!node_modules/**"
+        ]
+      },
+      {
+        "from": "../app/node_modules",
+        "to": "backend/node_modules",
+        "filter": [
+          "**/*"
         ]
       }
     ],

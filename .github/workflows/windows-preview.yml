@@ -17,6 +17,11 @@ jobs:
       - name: Instalar backend (somente dependências de execução)
         shell: pwsh
         run: npm install --prefix app --omit=dev --no-audit --no-fund
+      - name: Verificar dependências do backend antes do empacotamento
+        shell: pwsh
+        run: |
+          if (-not (Test-Path "app/node_modules/baileys")) { throw "[CI-D00] Baileys não foi instalado." }
+          if (-not (Test-Path "app/node_modules/tesseract.js")) { throw "[CI-D00] Tesseract não foi instalado." }
       - name: Instalar compilador desktop
         shell: pwsh
         run: npm install --prefix desktop --no-audit --no-fund
@@ -40,8 +45,10 @@ jobs:
           if ($installer.Count -ne 1) { throw '[CI-D01] Instalador não encontrado (esperado exatamente 1).' }
           $backend = 'dist/instalador/win-unpacked/resources/backend'
           if (-not (Test-Path "$backend/server.mjs")) { throw '[CI-D02] Servidor ausente do pacote.' }
-          if (-not (Test-Path "$backend/node_modules/baileys")) { throw '[CI-D03] Baileys ausente do pacote.' }
-          if (-not (Test-Path "$backend/node_modules/tesseract.js")) { throw '[CI-D04] OCR ausente do pacote.' }
+          if (-not (Test-Path "$backend/node_modules/baileys/package.json")) { throw '[CI-D03] Baileys ausente do pacote.' }
+          if (-not (Test-Path "$backend/node_modules/tesseract.js/package.json")) { throw '[CI-D04] OCR ausente do pacote.' }
+          Write-Host "Pacotes no backend:"
+          Get-ChildItem "$backend/node_modules" -Directory | Select-Object -First 20 -ExpandProperty Name
           Write-Host "Instalador pronto para teste: $($installer[0].Name) ($($installer[0].Length) bytes)"
       - uses: actions/upload-artifact@v4
         with:
