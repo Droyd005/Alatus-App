@@ -8,6 +8,12 @@ import {DIR, audit} from './core.mjs';
 export const LOGIN_RESTART_CODE = 515;
 export const LOGGED_OUT_CODE = 401;
 const RETRY_DELAYS = [1200, 2500, 5000, 10000, 20000];
+function phoneFromJid(jid){
+ const value=String(jid||'');
+ if(!value.endsWith('@s.whatsapp.net'))return null;
+ const digits=value.split('@')[0].split(':')[0];
+ return /^\d{10,15}$/.test(digits)?'+'+digits:null;
+}
 
 export function connectionPlan(code, attempt) {
  if(Number(code)===LOGGED_OUT_CODE)return {retry:false,reason:'logged_out',delay:0};
@@ -30,7 +36,7 @@ export class WhatsAppBridge {
   this.lastDisconnectCode=null;this.dependencies=dependencies;
   this.shuttingDown=false;this.groupMetadata=new Map();
  }
- publicStatus() {return {mode:this.mode,status:this.status,qr:this.qr,qrCreatedAt:this.qrCreatedAt,lastError:this.lastError,connected:this.status==='conectado',groupsLoaded:this.lastGroups.length,reconnectAttempt:this.retries,lastDisconnectCode:this.lastDisconnectCode};}
+ publicStatus() {return {mode:this.mode,status:this.status,qr:this.qr,qrCreatedAt:this.qrCreatedAt,lastError:this.lastError,connected:this.status==='conectado',connectedNumber:this.status==='conectado'?phoneFromJid(this.socket?.user?.id):null,groupsLoaded:this.lastGroups.length,reconnectAttempt:this.retries,lastDisconnectCode:this.lastDisconnectCode};}
  _clearTimer() {if(this.retryTimer!==null){clearTimeout(this.retryTimer);this.retryTimer=null;}}
  _closeSocket() {
   const previous=this.socket;this.socket=null;
@@ -130,10 +136,10 @@ export class WhatsAppBridge {
   if(this.startPromise)await this.startPromise;
   this._clearTimer();++this.generation;this._closeSocket();
   try {await this.credentialFlush;}catch{}
-  const backup=path.join(DIR.data,'session-backup-'+new Date().toISOString().replace(/[:.]/g,'-'));
+  const backup=path.join(DIR.data,'session-backup-'+new Date().toISOString().replace(/[:.]/g,'-')+'-'+process.pid);
   if(fs.existsSync(DIR.session))fs.renameSync(DIR.session,backup);
   fs.mkdirSync(DIR.session,{recursive:true});
-  this.retries=0;this.lastGroups=[];this.qr=null;this.qrCreatedAt=null;this.lastError=null;this.status='desconectado';
+  this.retries=0;this.lastGroups=[];this.groupMetadata.clear();this.lastDisconnectCode=null;this.qr=null;this.qrCreatedAt=null;this.lastError=null;this.status='desconectado';
   audit('whatsapp_sessao_redefinida',{backupCreated:fs.existsSync(backup)});
   return this.connect();
  }

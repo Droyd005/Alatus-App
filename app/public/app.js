@@ -153,12 +153,12 @@ function renderGroups(){const container=$('groups'),previous=new Set(selectedGro
 function selectedGroups(){return [...$('groups').querySelectorAll('input:checked')].map(n=>n.value);}
 function toggleAllGroups(checked){for(const input of $('groups').querySelectorAll('input[type=checkbox]'))input.checked=checked;updateSelectedCount();}
 async function updateStatus(){try{const s=await api('/api/status');setMode(s.mode);
- const labels={conectado:'WhatsApp conectado.',aguardando_qr:'Escaneie o QR em Dispositivos conectados no WhatsApp.',finalizando_pareamento:'QR lido. Finalizando pareamento automaticamente, não escaneie novamente.',reconectando:'Reconectando automaticamente…',reiniciando:'Reiniciando conexão…',conectando:'Conectando ao WhatsApp…',sessao_encerrada:'Sessão inválida. Abra a seção de problemas para redefinir a sessão.',erro:'Falha na conexão. Reinicie ou veja o diagnóstico.',desconectado:'WhatsApp desconectado.'};
- $('waStatus').textContent=s.mode==='simulacao'?'SIMULAÇÃO: nenhum WhatsApp conectado. Use os grupos de teste.':(labels[s.status]||`Estado: ${s.status}.`)+(s.lastError?' '+s.lastError:'');
+ const labels={conectado:'WhatsApp conectado.',aguardando_qr:'Escaneie o QR em Dispositivos conectados no WhatsApp.',finalizando_pareamento:'QR lido. Finalizando pareamento automaticamente, não escaneie novamente.',reconectando:'Reconectando automaticamente…',reiniciando:'Reiniciando conexão…',conectando:'Conectando ao WhatsApp…',sessao_encerrada:'Sessão inválida. Clique em Trocar número / novo QR para conectar outra conta.',erro:'Falha na conexão. Reinicie ou veja o diagnóstico.',desconectado:'WhatsApp desconectado.'};
+ $('waStatus').textContent=s.mode==='simulacao'?'SIMULAÇÃO: nenhum WhatsApp conectado. Use os grupos de teste.':(labels[s.status]||`Estado: ${s.status}.`)+(s.connectedNumber?' Número conectado: '+s.connectedNumber+'.':'')+(s.lastError?' '+s.lastError:'');
  $('qr').classList.toggle('hidden',!s.qr);if(s.qr)$('qr').src=s.qr;
  $('connect').disabled=s.mode==='simulacao'||s.status==='conectado'||s.status==='aguardando_qr'||s.status==='conectando'||s.status==='finalizando_pareamento'||s.status==='reconectando';
  $('reconnect').disabled=s.mode==='simulacao'||!!s.activeJobId;
- $('resetSession').disabled=s.mode==='simulacao'||!!s.activeJobId;
+ $('resetSession').disabled=s.mode==='simulacao'||!!s.activeJobId||!!s.activeBatchId;
  return s;
  }catch(e){$('waStatus').textContent=e.message;}}
 async function loadGroups(){message('groupStatus','Consultando grupos…');try{const ret=await api('/api/groups');groups=ret.groups||[];renderGroups();message('groupStatus',`${groups.length} grupo(s) encontrado(s).`,'ok');}catch(e){groups=[];renderGroups();message('groupStatus',e.message,'bad');}}
@@ -204,10 +204,15 @@ $('selectAll').addEventListener('click',()=>toggleAllGroups(true));
 $('clearAll').addEventListener('click',()=>toggleAllGroups(false));
 $('reconnect').addEventListener('click',async()=>{message('groupStatus','Reiniciando conexão sem apagar credenciais…');try{await post('/api/reconnect',{});groups=[];renderGroups();await updateStatus();message('groupStatus','Conexão reiniciada. Aguarde o QR ou a reconexão automática.','ok');}catch(e){message('groupStatus',e.message,'bad');}});
 $('resetSession').addEventListener('click',async()=>{
- const text=prompt('ATENÇÃO: isto arquiva a sessão atual e exige um novo QR. Digite REDEFINIR SESSAO para continuar:');
- if(text!=='REDEFINIR SESSAO')return;
- try{message('groupStatus','Arquivando sessão antiga e iniciando pareamento…');await post('/api/session/reset',{confirm:text});groups=[];renderGroups();await updateStatus();message('groupStatus','Sessão anterior preservada em backup local. Aguarde o novo QR.','ok');}
- catch(e){message('groupStatus',e.message,'bad');}
+ if(!confirm('Trocar a conta de WhatsApp conectada?\n\nA sessão anterior ficará arquivada e será gerado um QR para o NOVO número. As cargas pendentes não serão enviadas automaticamente.'))return;
+ $('resetSession').disabled=true;
+ try{
+  message('groupStatus','Arquivando a conta anterior e preparando novo QR…');
+  const result=await post('/api/session/reset',{confirm:'REDEFINIR SESSAO'});
+  groups=[];renderGroups();await updateStatus();await loadOutbox();
+  message('groupStatus',`Sessão anterior arquivada. No NOVO WhatsApp, abra Dispositivos conectados > Conectar dispositivo e escaneie o QR.${result.pendingReview?` ${result.pendingReview} carga(s) pendente(s) precisam ser adicionadas novamente.`:''}`,'ok');
+ }catch(e){message('groupStatus',e.message,'bad');}
+ finally{await updateStatus();}
 });
 $('cancelSend').addEventListener('click',async()=>{if(!activeJobId)return;try{await post('/api/cancel',{jobId:activeJobId});message('sendStatus','Interrupção solicitada. A mensagem atual pode ainda ser enviada; o restante será interrompido.','warning');}catch(e){message('sendStatus',e.message,'bad');}});
 $('reloadJobs').addEventListener('click',loadJobs);$('send').addEventListener('click',publish);

@@ -64,3 +64,46 @@ test('otimização: metadata de grupo é consultada do cache recente',async()=>{
  await bridge.shutdown();
  assert.equal(await config.cachedGroupMetadata('g1@g.us'),undefined);
 });
+
+
+test('trocar número: arquiva credenciais, reinicia com nova sessão e gera novo QR',async()=>{
+ const fs=await import('node:fs');
+ const os=await import('node:os');
+ const path=await import('node:path');
+ const {DIR}=await import('../src/core.mjs');
+ const root=fs.mkdtempSync(path.join(os.tmpdir(),'alatus-trocar-numero-'));
+ const original={...DIR};
+ Object.assign(DIR,{data:path.join(root,'data'),session:path.join(root,'data','session'),logs:path.join(root,'logs')});
+ try{
+  setupDirs();
+  const marker=path.join(DIR.session,'creds.json');
+  fs.writeFileSync(marker,'{"conta":"antiga"}');
+  let sockets=[],initialCreds=[];
+  const fakeBaileys={
+   default:()=>{const socket={ev:new EventEmitter(),end(){this.closed=true;},user:{id:'5511999999999:1@s.whatsapp.net'}};sockets.push(socket);return socket;},
+   useMultiFileAuthState:async folder=>{
+    initialCreds.push(fs.existsSync(path.join(folder,'creds.json')));
+    return {state:{creds:{}},saveCreds:async()=>{}};
+   }
+  };
+  const bridge=new WhatsAppBridge('real',{baileys:fakeBaileys,pino:{default:()=>({})},qrcode:{default:{toDataURL:async()=>('data:image/png;base64,AA')}}});
+  await bridge.connect();
+  sockets[0].ev.emit('connection.update',{connection:'open'});
+  assert.equal(bridge.publicStatus().connectedNumber,'+5511999999999');
+  assert.equal(initialCreds[0],true);
+  await bridge.resetSession();
+  assert.equal(sockets.length,2);
+  assert.equal(sockets[0].closed,true);
+  assert.equal(initialCreds[1],false,'A nova conta não pode herdar as credenciais antigas');
+  assert.equal(fs.existsSync(marker),false);
+  const backups=fs.readdirSync(DIR.data).filter(n=>n.startsWith('session-backup-'));
+  assert.equal(backups.length,1);
+  assert.equal(fs.readFileSync(path.join(DIR.data,backups[0],'creds.json'),'utf8'),'{"conta":"antiga"}');
+  sockets[0].ev.emit('connection.update',{connection:'close',lastDisconnect:{error:{output:{statusCode:515}}}});
+  sockets[1].ev.emit('connection.update',{qr:'novo-qr'});
+  await new Promise(resolve=>setTimeout(resolve,15));
+  assert.equal(bridge.status,'aguardando_qr');
+  assert.equal(bridge.publicStatus().qr,'data:image/png;base64,AA');
+  await bridge.shutdown();
+ }finally{Object.assign(DIR,original);fs.rmSync(root,{recursive:true,force:true});}
+});

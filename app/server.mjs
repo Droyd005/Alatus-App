@@ -121,7 +121,16 @@ async function request(req,res){
    const b=await body(req,2000);
    if(b.confirm!=='REDEFINIR SESSAO')throw fail(422,'Confirmação inválida. Sessão preservada.');
    const status=await bridge.resetSession();lastGroups=[];
-   return json(res,200,status);
+   // Destinatários da conta anterior não devem ser reutilizados na nova conta.
+   let pendingReview=0;
+   for(const item of outbox){
+    if(item.status!=='pendente')continue;
+    item.status='revisar_manualmente';
+    item.error='Conta de WhatsApp alterada. Adicione novamente esta carga após selecionar os grupos da nova conta.';
+    pendingReview++;
+   }
+   if(pendingReview){updateOutbox();audit('troca_numero_fila_revisao',{count:pendingReview});}
+   return json(res,200,{...status,pendingReview});
   }
   if(req.method==='GET'&&pathname==='/api/groups'){
    const list=await bridge.groups();lastGroups=groupSafelist(list);return json(res,200,{groups:lastGroups,mode});
