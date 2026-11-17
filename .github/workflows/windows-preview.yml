@@ -1,56 +1,83 @@
-name: Windows Desktop - instalador de testes
+name: ALATUS Windows - teste e release
 on:
   push:
     branches: [main]
+    tags: ['v*']
   workflow_dispatch:
 permissions:
   contents: read
 jobs:
   build:
     runs-on: windows-latest
-    timeout-minutes: 35
+    timeout-minutes: 40
+    permissions:
+      contents: write
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
           node-version: '24'
-      - name: Instalar backend (somente dependências de execução)
-        shell: pwsh
-        run: npm install --prefix app --omit=dev --no-audit --no-fund
-      - name: Verificar dependências do backend antes do empacotamento
+      - name: Conferir versao da tag
+        if: startsWith(github.ref, 'refs/tags/v')
         shell: pwsh
         run: |
-          if (-not (Test-Path 'app/node_modules/baileys/package.json')) { throw '[CI-D00] Baileys não foi instalado.' }
-          if (-not (Test-Path 'app/node_modules/tesseract.js/package.json')) { throw '[CI-D00] Tesseract não foi instalado.' }
-      - name: Instalar compilador desktop
+          $v = (Get-Content desktop/package.json -Raw | ConvertFrom-Json).version
+          if ('${{ github.ref_name }}' -ne "v$v") { throw '[REL-01] A tag nao corresponde a versao do aplicativo.' }
+      - name: Instalar backend
+        shell: pwsh
+        run: npm install --prefix app --omit=dev --no-audit --no-fund
+      - name: Validar dependencias
+        shell: pwsh
+        run: |
+          if (-not (Test-Path 'app/node_modules/baileys/package.json')) { throw '[CI-D00] Baileys ausente.' }
+          if (-not (Test-Path 'app/node_modules/tesseract.js/package.json')) { throw '[CI-D00] Tesseract ausente.' }
+      - name: Instalar dependencias desktop
         shell: pwsh
         run: npm install --prefix desktop --no-audit --no-fund
-      - name: Testar servidor e fila
+      - name: Testar backend
         shell: pwsh
         run: |
           npm --prefix app run check
           npm --prefix app test
-      - name: Testar camada de desktop
+      - name: Testar desktop e updater
         shell: pwsh
         run: |
           npm --prefix desktop run check
           npm --prefix desktop test
-      - name: Gerar instalador Windows NSIS 64 bits
+      - name: Criar instalador NSIS
         shell: pwsh
         run: npm --prefix desktop run dist:win
-      - name: Validar que o instalador e o backend estão no pacote
+      - name: Validar instalador e metadados de atualizacao
         shell: pwsh
         run: |
-          $installer = Get-ChildItem -Path dist/instalador -Filter 'ALATUS-Instalador-*.exe' -File
-          if ($installer.Count -ne 1) { throw '[CI-D01] Instalador não encontrado (esperado exatamente 1).' }
+          $inst = @(Get-ChildItem -Path dist/instalador -Filter 'ALATUS-Instalador-*.exe' -File)
+          if ($inst.Count -ne 1) { throw '[REL-02] Instalador ausente ou duplicado.' }
+          $meta = 'dist/instalador/latest.yml'
+          if (-not (Test-Path $meta)) { throw '[REL-03] latest.yml ausente. Updater nao funcionara.' }
+          $v = (Get-Content desktop/package.json -Raw | ConvertFrom-Json).version
+          $body = Get-Content $meta -Raw
+          if ($body -notmatch [regex]::Escape("version: $v")) { throw '[REL-04] Versao do latest.yml divergente.' }
+          if ($body -notlike "*$($inst[0].Name)*") { throw '[REL-05] Instalador nao consta no manifesto.' }
           $backend = 'dist/instalador/win-unpacked/resources/backend'
-          if (-not (Test-Path "$backend/server.mjs")) { throw '[CI-D02] Servidor ausente do pacote.' }
-          if (-not (Test-Path "$backend/node_modules/baileys/package.json")) { throw '[CI-D03] Baileys ausente do pacote.' }
-          if (-not (Test-Path "$backend/node_modules/tesseract.js/package.json")) { throw '[CI-D04] OCR ausente do pacote.' }
-          Write-Host "Instalador pronto para teste: $($installer[0].Name) ($($installer[0].Length) bytes)"
+          foreach ($file in @('server.mjs','node_modules/baileys/package.json','node_modules/tesseract.js/package.json')) {
+            if (-not (Test-Path "$backend/$file")) { throw "[CI-D03] Arquivo ausente no pacote: $file" }
+          }
+          if (-not (Test-Path 'dist/instalador/win-unpacked/resources/app-update.yml')) { throw '[REL-06] Configuracao de atualizacoes ausente.' }
+          Write-Host "Instalador validado: $($inst[0].Name)"
       - uses: actions/upload-artifact@v4
         with:
-          name: ALATUS-Desktop-Instalador-v0.7.0-TESTE
-          path: dist/instalador/ALATUS-Instalador-*.exe
+          name: ALATUS-Desktop-v0.7.1-TESTE
+          path: |
+            dist/instalador/ALATUS-Instalador-*.exe
+            dist/instalador/latest.yml
           if-no-files-found: error
           retention-days: 30
+      - name: Publicar Release estavel no GitHub (somente tags)
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $tag = '${{ github.ref_name }}'
+          $inst = @(Get-ChildItem dist/instalador -Filter 'ALATUS-Instalador-*.exe' -File)
+          gh release create $tag $inst[0].FullName 'dist/instalador/latest.yml' --title "ALATUS $tag" --generate-notes --latest

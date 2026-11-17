@@ -1,3 +1,8 @@
+## 0.7.1
+- Updater via GitHub Releases na abertura, com confirmação e proteção da fila de envios.
+- Pipeline de tag valida dependências, gerador NSIS e latest.yml antes de publicar.
+- Teste HTTP executado sem concorrência entre arquivos para reduzir condição de corrida.
+
 ## [0.7.0] - 2026-11-17
 
 ### Adicionado

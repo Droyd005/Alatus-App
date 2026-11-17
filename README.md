@@ -70,3 +70,6 @@ O aplicativo desktop **encerra** o servidor ao fechar a janela. Não é um servi
 ## Licença
 
 Código-fonte em [MIT](LICENSE). Bibliotecas têm licenças próprias. A marca ALATUS, suas artes e o logotipo **não** estão licenciados sob MIT e não são fornecidos neste repositório.
+
+## Atualização automática (v0.7.1)
+O aplicativo verifica novas versões aprovadas no GitHub Releases ao abrir. Consulte `docs/ATUALIZACAO_AUTOMATICA.md`.
