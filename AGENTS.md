@@ -20,3 +20,8 @@ Instalador Windows pelo workflow `.github/workflows/windows-preview.yml`; não a
 
 ## Distribuição
 Código-fonte no ZIP. O instalador `.exe` será compilado pelo GitHub Actions no Windows após publicar. Electron inclui o runtime Node. Primeiro OCR pode exigir internet para modelo português. Instalador sem assinatura, testar em Windows antes de anunciar release estável.
+
+## Regra da fila multicargas
+Cada registro deve preservar uma combinação independente de imagem + origem + destino + veículo + legenda + grupos.
+Não enviar ao importar ou enfileirar; somente o usuário pode iniciar o lote explicitamente.
+Não enviar em paralelo nem repetir automaticamente tentativas incertas. Persistir registros e preservar estado em reinícios.

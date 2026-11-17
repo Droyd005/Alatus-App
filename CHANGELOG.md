@@ -1,3 +1,18 @@
+## [0.7.0] - 2026-11-17
+
+### Adicionado
+- Fila persistente com imagens, origem, destino, veículo, legenda e grupos exclusivos por carga.
+- Importação múltipla de PNG/JPG/WEBP com OCR individual.
+- Ações de adicionar/remover carga, iniciar lote, interromper os próximos envios e limpar finalizados.
+- Registro de progresso por grupo, rejeição de tentativas repetidas e bloqueio em resultado incerto.
+- Recuperação segura após reinício, sem retomada automática de envio.
+- Documentação `docs/FILA_MULTICARGAS.md` e testes integrados com 12 cargas distintas.
+
+### Mantido
+- Conexão WhatsApp e envio sequencial sem pausa fixa, sem paralelismo.
+- Interface desktop, perfil da empresa e histórico de envios.
+- Correção CI-D03 com inclusão explícita de dependências do backend no instalador.
+
 # Histórico de versões
 
 ## v0.6.1-desktop-preview (2026-11-17)

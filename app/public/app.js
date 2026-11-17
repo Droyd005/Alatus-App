@@ -1,6 +1,6 @@
 'use strict';
 const $=id=>document.getElementById(id);
-let imageId=null,groups=[],requestId=crypto.randomUUID(),mode='simulacao',isBusy=false,ocrSeq=0,customCaption=false,activeJobId=null,profile={company:'',phone:'',configured:false};
+let imageId=null,groups=[],requestId=crypto.randomUUID(),mode='simulacao',isBusy=false,ocrSeq=0,customCaption=false,activeJobId=null,activeBatchId=null,profile={company:'',phone:'',configured:false};
 function message(el,text,kind=''){const target=$(el);target.textContent=text;target.className=`${el==='ocrStatus'?'notice':'toast'} ${kind}`;}
 async function api(endpoint,options={}){
  const res=await fetch(endpoint,{credentials:'same-origin',...options,headers:{...(options.body?{'Content-Type':'application/json','X-Alatus-Request':'1'}:{}),...(options.headers||{})}});
@@ -66,13 +66,79 @@ async function refreshImages(){const data=await api('/api/images'),list=$('recen
  for(const im of data.images)list.add(new Option(`${im.filename||'Arte'} • ${new Date(im.createdAt).toLocaleString('pt-BR')}`,im.id));
  if(old&&data.images.some(x=>x.id===old))list.value=old;
 }
-async function fileUpload(file){if(!file)return;if(!/^image\/(png|jpeg|webp)$/.test(file.type)){message('uploadStatus','Formato inválido. Use PNG, JPG ou WEBP.','bad');return;}
+async function fileUpload(file,selectAfter=true){if(!file)return;if(!/^image\/(png|jpeg|webp)$/.test(file.type)){message('uploadStatus','Formato inválido. Use PNG, JPG ou WEBP.','bad');return;}
  if(file.size>8000000){message('uploadStatus','Máximo 8 MB por imagem.','bad');return;}
  message('uploadStatus','Importando imagem…');
  try{
   const data=await new Promise((resolve,reject)=>{const reader=new FileReader();reader.onload=()=>resolve(reader.result);reader.onerror=()=>reject(new Error('Falha ao ler imagem.'));reader.readAsDataURL(file);});
-  const res=await post('/api/upload',{data,filename:file.name});imagePreview(res.image.id);await refreshImages();message('uploadStatus',`Imagem importada: ${file.name}`,'ok');
+  const res=await post('/api/upload',{data,filename:file.name});if(selectAfter)imagePreview(res.image.id);await refreshImages();message('uploadStatus',`Imagem importada: ${file.name}`,'ok');
  }catch(e){message('uploadStatus',e.message,'bad');}}
+async function uploadFiles(list){
+ const files=[...list];if(!files.length)return;
+ for(let i=0;i<files.length;i++){
+  message('uploadStatus',`Importando imagem ${i+1}/${files.length}: ${files[i].name}`);
+  await fileUpload(files[i],i===files.length-1);
+ }
+ message('uploadStatus',`${files.length} arquivo(s) processado(s). Escolha uma arte na lista, aguarde o OCR e adicione à fila.`, 'ok');
+}
+function currentPublication(){
+ if(!profile.configured)throw new Error('Configure empresa e telefone no topo do painel.');
+ if(!imageId)throw new Error('Selecione uma imagem.');
+ const groupIds=selectedGroups();if(!groupIds.length)throw new Error('Selecione ao menos um grupo para esta carga.');
+ const origin=$('origin').value.trim().replace(/\n+/g,' + '),destination=$('destination').value.trim().replace(/\n+/g,' + '),vehicle=$('vehicle').value.trim(),caption=$('caption').value.trim();
+ if(!origin||!destination||!vehicle||!caption)throw new Error('Aguarde o OCR e confira origem, destino, veículo e legenda.');
+ return {imageId,origin,destination,vehicle,caption,groupIds,requestId};
+}
+async function addToOutbox(){
+ if(isBusy||activeBatchId)return;
+ try{
+  isBusy=true;$('addToOutbox').disabled=true;
+  const data=await post('/api/outbox/add',currentPublication());
+  requestId=crypto.randomUUID();
+  message('outboxStatus',`Carga incluída! ${data.item.groupIds.length} grupo(s) selecionado(s). Repita para as outras imagens.`, 'ok');
+  await loadOutbox();
+ }catch(e){message('outboxStatus',e.message,'bad');}
+ finally{isBusy=false;$('addToOutbox').disabled=false;}
+}
+async function startOutbox(){
+ try{
+  $('startOutbox').disabled=true;
+  const data=await post('/api/outbox/start',{});
+  message('outboxStatus',`Fila iniciada: ${data.items} carga(s). Confira a evolução abaixo.`, 'ok');
+  await loadOutbox();
+ }catch(e){message('outboxStatus',e.message,'bad');await loadOutbox();}
+}
+async function loadOutbox(){
+ try{
+  const data=await api('/api/outbox');activeBatchId=data.activeBatchId;
+  if(data.lastBatchError)message('outboxStatus','Falha do lote: '+data.lastBatchError,'bad');
+  const items=data.items||[],pending=items.filter(i=>i.status==='pendente');
+  $('startOutbox').disabled=!!activeBatchId||!!activeJobId||isBusy||!pending.length||!!data.uncertainSendBlock;
+  $('addToOutbox').disabled=!!activeBatchId||isBusy;
+  $('cancelOutbox').classList.toggle('hidden',!activeBatchId);
+  $('clearOutbox').disabled=!!activeBatchId||!items.some(i=>['simulado','submetido','interrompido_pelo_usuario'].includes(i.status));
+  $('outboxProgress').classList.toggle('hidden',!activeBatchId);
+  if(activeBatchId){const done=items.filter(i=>i.status!=='pendente').length;const progress=items.reduce((n,i)=>n+(i.progress?.done||0),0);
+   $('outboxProgress').textContent=`Lote ativo: ${done} carga(s) iniciada(s), ${progress} grupo(s) processado(s). Você pode interromper os próximos envios.`;}
+  const target=$('outboxItems');target.replaceChildren();
+  if(!items.length){const empty=document.createElement('p');empty.className='muted';empty.textContent='Nenhuma carga na fila. Importe uma arte e clique em Adicionar esta carga à fila.';target.append(empty);return;}
+  const summary=document.createElement('p');summary.className='muted';summary.textContent=`${pending.length} pendente(s) • ${items.length} carga(s) cadastrada(s)`;target.append(summary);
+  for(const [index,item] of items.entries()){
+   const box=document.createElement('div');box.className='outbox-item';
+   const thumb=document.createElement('img');thumb.className='outbox-thumb';thumb.alt='Prévia da carga';thumb.src='/api/image/'+encodeURIComponent(item.imageId);
+   const info=document.createElement('div');info.className='outbox-info';
+   const title=document.createElement('strong');title.textContent=`${index+1}. ${item.origin} → ${item.destination}`;
+   const details=document.createElement('div');details.className='muted';details.textContent=`${item.vehicle} • ${item.groupIds.length} grupos • ${item.status} • ${item.progress?.done||0}/${item.progress?.total||0}`;
+   const destinations=document.createElement('div');destinations.className='muted';destinations.textContent=(item.groupNames||[]).join(' · ');
+   info.append(title,details,destinations);
+   if(item.error){const err=document.createElement('div');err.className='bad';err.textContent=item.error;info.append(err);}
+   for(const result of item.results||[]){const line=document.createElement('div');line.className='muted';line.textContent=`• ${result.groupName}: ${result.status}`;info.append(line);}
+   const remove=document.createElement('button');remove.type='button';remove.className='btn secondary outbox-remove';remove.textContent='Remover';remove.disabled=!!activeBatchId;
+   remove.addEventListener('click',async()=>{try{await post('/api/outbox/remove',{id:item.id});await loadOutbox();}catch(e){message('outboxStatus',e.message,'bad');}});
+   box.append(thumb,info,remove);target.append(box);
+  }
+ }catch(e){message('outboxStatus','Não foi possível consultar a fila: '+e.message,'bad');}
+}
 function updateSelectedCount(){const selected=selectedGroups().length,total=groups.length;
  $('selectedCount').textContent=`${selected} de ${total} grupo(s) selecionado(s)`;
  $('selectAll').disabled=!total||selected===total;
@@ -98,7 +164,7 @@ async function updateStatus(){try{const s=await api('/api/status');setMode(s.mod
 async function loadGroups(){message('groupStatus','Consultando grupos…');try{const ret=await api('/api/groups');groups=ret.groups||[];renderGroups();message('groupStatus',`${groups.length} grupo(s) encontrado(s).`,'ok');}catch(e){groups=[];renderGroups();message('groupStatus',e.message,'bad');}}
 async function loadJobs(){try{const data=await api('/api/jobs');
  activeJobId=data.activeJobId||null;
- $('send').disabled=!!activeJobId||isBusy||!!data.uncertainSendBlock;
+ $('send').disabled=!!activeJobId||!!activeBatchId||isBusy||!!data.uncertainSendBlock;
  $('cancelSend').classList.toggle('hidden',!activeJobId);
  if(activeJobId){const job=data.jobs.find(j=>j.id===activeJobId);
   $('queueProgress').classList.remove('hidden');
@@ -126,7 +192,7 @@ async function publish(){if(isBusy)return;if(!profile.configured){message('sendS
 $('saveProfile').addEventListener('click',saveProfile);
 $('drop').addEventListener('click',()=>$('file').click());$('drop').addEventListener('keydown',e=>{if(e.key==='Enter'||e.key===' '){e.preventDefault();$('file').click();}});
 $('drop').addEventListener('dragover',e=>{e.preventDefault();$('drop').classList.add('drag');});$('drop').addEventListener('dragleave',()=>$('drop').classList.remove('drag'));
-$('drop').addEventListener('drop',e=>{e.preventDefault();$('drop').classList.remove('drag');fileUpload(e.dataTransfer.files[0]);});$('file').addEventListener('change',e=>fileUpload(e.target.files[0]));
+$('drop').addEventListener('drop',e=>{e.preventDefault();$('drop').classList.remove('drag');void uploadFiles(e.dataTransfer.files);});$('file').addEventListener('change',e=>{void uploadFiles(e.target.files);e.target.value='';});
 $('recent').addEventListener('change',e=>{if(e.target.value)imagePreview(e.target.value);});
 for(const id of ['origin','destination','vehicle'])$(id).addEventListener('input',()=>{requestId=crypto.randomUUID();if(!customCaption)syncCaption(true);});
 $('caption').addEventListener('input',()=>{customCaption=true;requestId=crypto.randomUUID();});
@@ -145,6 +211,10 @@ $('resetSession').addEventListener('click',async()=>{
 });
 $('cancelSend').addEventListener('click',async()=>{if(!activeJobId)return;try{await post('/api/cancel',{jobId:activeJobId});message('sendStatus','Interrupção solicitada. A mensagem atual pode ainda ser enviada; o restante será interrompido.','warning');}catch(e){message('sendStatus',e.message,'bad');}});
 $('reloadJobs').addEventListener('click',loadJobs);$('send').addEventListener('click',publish);
-(async()=>{try{const res=await api('/api/status');setMode(res.mode);await loadProfile();await Promise.all([updateStatus(),refreshImages(),loadJobs()]);await loadGroups();}catch(e){message('sendStatus','Falha ao iniciar: '+e.message,'bad');}})();
+$('addToOutbox').addEventListener('click',addToOutbox);$('startOutbox').addEventListener('click',startOutbox);
+$('cancelOutbox').addEventListener('click',async()=>{if(!activeBatchId)return;try{await post('/api/outbox/cancel',{batchId:activeBatchId});message('outboxStatus','Parada solicitada. Aguarde o envio atual e confira o histórico.','warning');}catch(e){message('outboxStatus',e.message,'bad');}});
+$('clearOutbox').addEventListener('click',async()=>{try{await post('/api/outbox/clear',{});await loadOutbox();}catch(e){message('outboxStatus',e.message,'bad');}});
+(async()=>{try{const res=await api('/api/status');setMode(res.mode);await loadProfile();await Promise.all([updateStatus(),refreshImages(),loadJobs(),loadOutbox()]);await loadGroups();}catch(e){message('sendStatus','Falha ao iniciar: '+e.message,'bad');}})();
 setInterval(updateStatus,4500);
 setInterval(loadJobs,2200);
+setInterval(loadOutbox,2200);

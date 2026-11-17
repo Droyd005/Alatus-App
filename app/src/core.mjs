@@ -6,7 +6,7 @@ import {fileURLToPath} from 'node:url';
 export const APP_PORT = 3187;
 export const ROOT = process.env.ALATUS_HOME ? path.resolve(process.env.ALATUS_HOME) : path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
 export const DIR = {data: path.join(ROOT,'data'), images:path.join(ROOT,'images','entrada'), logs:path.join(ROOT,'logs'), session:path.join(ROOT,'data','session')};
-export const DATA = { images: path.join(DIR.data,'images.json'), jobs: path.join(DIR.data,'jobs.json'), profile: path.join(DIR.data,'profile.json')};
+export const DATA = { images: path.join(DIR.data,'images.json'), jobs: path.join(DIR.data,'jobs.json'), outbox: path.join(DIR.data,'outbox.json'), profile: path.join(DIR.data,'profile.json')};
 export function setupDirs() { for (const p of Object.values(DIR)) mkdirSync(p,{recursive:true}); }
 export function loadJson(filename, fallback) {try {return JSON.parse(readFileSync(filename,'utf8'));} catch(e) {if(e.code==='ENOENT')return fallback;throw e;}}
 export function saveJson(filename, value) {const temp=`${filename}.${randomUUID()}.tmp`;writeFileSync(temp,JSON.stringify(value,null,2),{mode:0o600});renameSync(temp,filename);}

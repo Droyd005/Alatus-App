@@ -2,7 +2,17 @@
 
 Painel **local e gratuito** para Windows: importe uma imagem já pronta, reconheça coleta, entrega e veículo por OCR, gere uma legenda e envie a imagem com o texto para grupos de WhatsApp escolhidos **manualmente**.
 
-> **Estado:** versão 0.6.1-desktop-preview. O fluxo WhatsApp da **v0.4 foi validado pelo operador** em Windows. A janela e o instalador da v0.6 ainda precisam de aceitação em um computador Windows. Não confundir testes automatizados com validação de entrega real.
+> **Estado:** versão 0.7.0-multicarga-preview. O fluxo WhatsApp da **v0.4 foi validado pelo operador** em Windows. A janela e o instalador da v0.6 ainda precisam de aceitação em um computador Windows. Não confundir testes automatizados com validação de entrega real.
+
+## Fila de múltiplas cargas (v0.7.0)
+
+- Importe mais de 10 imagens em uma mesma sessão. Cada imagem tem leitura OCR individual.
+- Defina uma legenda diferente e **grupos próprios para cada carga**; depois clique em **Adicionar esta carga à fila**.
+- Clique em **Iniciar envio da fila** para processar tudo de forma sequencial, com progresso e histórico por grupo.
+- Nenhum item é enviado durante a importação ou inclusão na fila, e uma falha incerta bloqueia o restante.
+- A fila é persistida localmente e não volta a enviar automaticamente após reinício.
+
+Veja o [guia de múltiplas cargas](docs/FILA_MULTICARGAS.md).
 
 ## Funcionalidades
 
@@ -16,7 +26,7 @@ Painel **local e gratuito** para Windows: importe uma imagem já pronta, reconhe
 
 ## Instalação para parceiros (Windows 10/11 x64)
 
-A versão **0.6** substitui a interface que abria uma aba do navegador por uma **janela de desktop**. Após publicar o código no GitHub, abra **Actions → Windows Desktop - instalador de testes**, faça download do artefato e execute o `ALATUS-Instalador-0.6.1-x64.exe`. O instalador cria atalho na Área de Trabalho da conta Windows atual.
+A versão **0.7** mantém a interface que abria uma aba do navegador por uma **janela de desktop**. Após publicar o código no GitHub, abra **Actions → Windows Desktop - instalador de testes**, faça download do artefato e execute o `ALATUS-Instalador-0.7.0-x64.exe`. O instalador cria atalho na Área de Trabalho da conta Windows atual.
 
 Na primeira abertura, se houver dados da v0.4 em `Z:\ALATUS`, o sistema oferecerá reutilizá-los (perfil, telefone, imagens e sessão WhatsApp) com consentimento. Novas instalações usam `%APPDATA%\ALATUS Publicador de Fretes`.
 
@@ -39,7 +49,7 @@ Ao **fechar** o aplicativo, o socket de WhatsApp é encerrado, mas as credenciai
 
 Leia o [guia de instalação](docs/DESKTOP_INSTALACAO.md) e o [diagnóstico por etapa](docs/ERROS_DESKTOP.md).
 
-**Estado da versão desktop:** código e testes automatizados prontos; compilação NSIS e funcionamento da janela ainda não verificados em Windows. A versão v0.4 é a referência funcional de envio real já testada pelo operador.
+**Estado da v0.7:** os testes automatizados de fila passaram e o instalador permanece pendente de compilação e validação na máquina Windows. A versão anterior permanece como referência de envio real.
 
 ## Avisos importantes
 

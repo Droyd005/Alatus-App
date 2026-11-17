@@ -54,7 +54,7 @@ async function waitHealth(timeoutMs=20000){
  while(Date.now()<deadline){
   if(!serverProcess||serverProcess.exitCode!==null)throw new Error('Servidor finalizou antes de abrir.');
   try {const response=await fetch(LOOPBACK_URL+'/api/health',{signal:AbortSignal.timeout(1200)});
-   if(response.ok){const data=await response.json();if(data?.app==='ALATUS v0.6'&&data.ok)return;}
+   if(response.ok){const data=await response.json();if(data?.app==='ALATUS v0.7'&&data.ok)return;}
   }catch{}
   await new Promise(r=>setTimeout(r,220));
  }
