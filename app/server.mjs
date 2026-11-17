@@ -39,6 +39,10 @@ let ocrQueue=Promise.resolve();
 const pendingOcr=new Map();
 function queueOcr(id,force=false){
  const image=imageRecord(id);
+ // Apenas testes de integração da fila, em simulação: não executar OCR ou baixar modelos.
+ if(mode==='simulacao'&&process.env.ALATUS_TEST_SKIP_OCR==='1'){
+  image.ocr={status:'skipped_for_test',data:null};saveJson(DATA.images,images);return;
+ }
  if(pendingOcr.has(id))return;
  if(image.ocr?.status==='ready'&&!force)return;
  image.ocr={status:'processing',data:null,startedAt:new Date().toISOString()};
