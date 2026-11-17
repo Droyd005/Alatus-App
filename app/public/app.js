@@ -15,7 +15,7 @@ function syncCaption(silent=false){
  const origin=$('origin').value.trim().replace(/\n+/g,' + '),destination=$('destination').value.trim().replace(/\n+/g,' + '),vehicle=$('vehicle').value.trim();
  if(!profile.configured||!profile.company||!profile.phone){$('caption').value='';if(!silent)message('sendStatus','Configure empresa e contato para gerar a legenda.','warning');return false;}
  if(!origin||!destination||!vehicle){$('caption').value='';if(!silent)message('sendStatus','Preencha os campos ainda não reconhecidos para gerar a legenda.','warning');return false;}
- $('caption').value=`🚛 *${profile.company.toUpperCase()} | FRETE DISPONÍVEL*\n\n📍 *Coleta:* ${origin}\n🏁 *Entrega:* ${destination}\n❄️ *Veículo:* ${vehicle}\n\n💰 *Valores a negociar*\n📲 *${profile.phone}*`;
+ $('caption').value=`🚛 *${profile.company.toUpperCase()} | FRETE DISPONÍVEL*\n\n📍 *Coleta:* ${origin}\n🏁 *Entrega:* ${destination}\n🚚 *Veículo:* ${vehicle}\n\n💰 *Valores a negociar*\n📲 *${profile.phone}*`;
  return true;
 }
 async function loadProfile(){

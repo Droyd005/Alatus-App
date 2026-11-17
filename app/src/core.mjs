@@ -47,7 +47,7 @@ export function validateProfile(body){
 export function persistProfile(body){const p=validateProfile(body);saveJson(DATA.profile,p);audit('perfil_atualizado',{company:p.company});return p;}
 export function makeCaption({origin,destination,vehicle},p=getProfile()) {
  if(!p.configured||!p.company||!p.phone)throw fail(422,'Configure a empresa e o telefone antes de gerar a legenda.');
- return `🚛 *${p.company.toUpperCase()} | FRETE DISPONÍVEL*\n\n📍 *Coleta:* ${requireText(origin,'origem',300)}\n🏁 *Entrega:* ${requireText(destination,'destino',300)}\n❄️ *Veículo:* ${requireText(vehicle,'veículo',160)}\n\n💰 *Valores a negociar*\n📲 *${p.phone}*`;
+ return `🚛 *${p.company.toUpperCase()} | FRETE DISPONÍVEL*\n\n📍 *Coleta:* ${requireText(origin,'origem',300)}\n🏁 *Entrega:* ${requireText(destination,'destino',300)}\n🚚 *Veículo:* ${requireText(vehicle,'veículo',160)}\n\n💰 *Valores a negociar*\n📲 *${p.phone}*`;
 }
 export function validateSend(body, images, groups) {
  if(!body || typeof body!=='object')throw fail(400,'Dados inválidos.');
