@@ -1,6 +1,6 @@
 {
   "name": "alatus-painel",
-  "version": "0.7.4",
+  "version": "0.7.5",
   "private": true,
   "type": "module",
   "description": "Painel local ALATUS com leitura OCR, legenda automatica e envio explicito para grupos selecionados",

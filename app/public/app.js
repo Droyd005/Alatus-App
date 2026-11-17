@@ -10,7 +10,7 @@ async function api(endpoint,options={}){
 }
 const post=(endpoint,data)=>api(endpoint,{method:'POST',body:JSON.stringify(data)});
 function labelStatus(s){return ({simulacao:'SIMULAÇÃO (SEM ENVIO)',real:'MODO REAL'})[s]||s;}
-function setMode(newMode){mode=newMode;document.body.classList.remove('simulacao','real');document.body.classList.add(mode);$('mode').textContent=labelStatus(mode);}
+function setMode(newMode){mode=newMode;document.body.classList.remove('simulacao','real');document.body.classList.add(mode);}
 function syncCaption(silent=false){
  const origin=$('origin').value.trim().replace(/\n+/g,' + '),destination=$('destination').value.trim().replace(/\n+/g,' + '),vehicle=$('vehicle').value.trim();
  if(!profile.configured||!profile.company||!profile.phone){$('caption').value='';if(!silent)message('sendStatus','Configure empresa e contato para gerar a legenda.','warning');return false;}
@@ -21,7 +21,7 @@ function syncCaption(silent=false){
 async function loadProfile(){
  const data=await api('/api/profile');profile=data.profile;
  $('companyName').value=profile.company||'';$('companyPhone').value=profile.phone||'';
- $('brandTitle').textContent=profile.company||'PUBLICADOR DE FRETES';
+
  $('companySettings').open=!profile.configured;
  message('profileStatus',profile.configured?'Perfil configurado para esta instalação.':'Antes do primeiro envio, cadastre empresa e telefone.',profile.configured?'ok':'warning');
  if(!customCaption)syncCaption(true);
@@ -165,6 +165,7 @@ async function loadGroups(){message('groupStatus','Consultando grupos…');try{c
 async function loadJobs(){try{const data=await api('/api/jobs');
  activeJobId=data.activeJobId||null;
  $('send').disabled=!!activeJobId||!!activeBatchId||isBusy||!!data.uncertainSendBlock;
+  $('clearJobs').disabled=!!activeJobId||!!activeBatchId||isBusy||!data.jobs.some(j=>['simulado','submetido','interrompido_pelo_usuario'].includes(j.status));
  $('cancelSend').classList.toggle('hidden',!activeJobId);
  if(activeJobId){const job=data.jobs.find(j=>j.id===activeJobId);
   $('queueProgress').classList.remove('hidden');
@@ -215,6 +216,14 @@ $('resetSession').addEventListener('click',async()=>{
  finally{await updateStatus();}
 });
 $('cancelSend').addEventListener('click',async()=>{if(!activeJobId)return;try{await post('/api/cancel',{jobId:activeJobId});message('sendStatus','Interrupção solicitada. A mensagem atual pode ainda ser enviada; o restante será interrompido.','warning');}catch(e){message('sendStatus',e.message,'bad');}});
+ $('clearJobs').addEventListener('click',async()=>{
+  if(activeBatchId||activeJobId||isBusy){message('historyStatus','Aguarde o término dos envios para limpar o histórico.','warning');return;}
+  if(!confirm('Excluir o histórico de envios finalizados? Registros com resultado incerto serão mantidos para conferência.'))return;
+  $('clearJobs').disabled=true;
+  try{const result=await post('/api/jobs/clear',{});
+   await loadJobs();message('historyStatus',`${result.removed} registro(s) removido(s). ${result.preserved} registro(s) de revisão preservado(s).`,'ok');
+  }catch(e){message('historyStatus',e.message,'bad');await loadJobs();}
+ });
 $('reloadJobs').addEventListener('click',loadJobs);$('send').addEventListener('click',publish);
 $('addToOutbox').addEventListener('click',addToOutbox);$('startOutbox').addEventListener('click',startOutbox);
 $('cancelOutbox').addEventListener('click',async()=>{if(!activeBatchId)return;try{await post('/api/outbox/cancel',{batchId:activeBatchId});message('outboxStatus','Parada solicitada. Aguarde o envio atual e confira o histórico.','warning');}catch(e){message('outboxStatus',e.message,'bad');}});

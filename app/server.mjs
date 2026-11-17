@@ -18,6 +18,7 @@ let serverShuttingDown=false;
 setupDirs();
 const bridge=new WhatsAppBridge(mode);
 const images=loadJson(DATA.images,[]), jobs=loadJson(DATA.jobs,[]), outbox=loadJson(DATA.outbox,[]);
+const clearedRequestIds=new Set(loadJson(DATA.clearedRequestIds,[]));
 if(recoverOutbox(outbox))saveJson(DATA.outbox,outbox);
 // Se o Windows desligou durante um envio, não presumir sucesso e nunca reenviar sozinho.
 let interruptedJobs=false;
@@ -83,6 +84,11 @@ async function request(req,res){
   if(req.method==='GET'&&pathname==='/api/health')return json(res,200,{ok:true,app:'ALATUS v0.7',mode,server:'local',authentication:'none_localhost'});
   if(req.method==='GET'&&pathname==='/')return text(res,200,fs.readFileSync(path.join(appDir,'public','index.html')),'text/html; charset=utf-8');
   if(req.method==='GET'&&pathname==='/app.js')return text(res,200,fs.readFileSync(path.join(appDir,'public','app.js')),'application/javascript; charset=utf-8');
+  if(req.method==='GET'&&(pathname==='/brand/alatus-emblem.png'||pathname==='/brand/alatus-wallpaper.webp')){
+   const file=pathname.endsWith('.png')?'alatus-emblem.png':'alatus-wallpaper.webp';
+   const mime=file.endsWith('.png')?'image/png':'image/webp';
+   res.writeHead(200,{...HEADERS,'Content-Type':mime});res.end(fs.readFileSync(path.join(appDir,'public','brand',file)));return;
+  }
   if(req.method==='POST'){
    if(!isValidWrite(req))throw fail(403,'Origem do pedido não autorizada. Abra http://127.0.0.1:'+port+'.');
    if(!String(req.headers['content-type']||'').startsWith('application/json'))throw fail(415,'Envie Content-Type application/json.');
@@ -137,9 +143,22 @@ async function request(req,res){
   }
   if(req.method==='GET'&&pathname==='/api/outbox')return json(res,200,{activeBatchId,activeJobId,uncertainSendBlock,items:outbox});
   if(req.method==='GET'&&pathname==='/api/jobs')return json(res,200,{activeJobId,uncertainSendBlock,jobs:jobs.slice(-30).reverse().map(j=>({id:j.id,createdAt:j.createdAt,mode:j.mode,origin:j.origin,destination:j.destination,status:j.status,progress:j.progress,results:j.results}))});
+  if(req.method==='POST'&&pathname==='/api/jobs/clear'){
+   if(busy||activeJobId||activeBatchId)throw fail(409,'Aguarde a conclusão dos envios antes de limpar o histórico.');
+   await body(req,2000);
+   const completed=new Set(['simulado','submetido','interrompido_pelo_usuario']);
+   const finished=jobs.filter(j=>completed.has(j.status));
+   const keep=jobs.filter(j=>!completed.has(j.status));
+   for(const job of finished)if(job.requestId)clearedRequestIds.add(job.requestId);
+   saveJson(DATA.clearedRequestIds,[...clearedRequestIds]);
+   jobs.splice(0,jobs.length,...keep);updateJobs();
+   audit('historico_limpo',{removed:finished.length,preserved:keep.length});
+   return json(res,200,{removed:finished.length,preserved:keep.length});
+  }
   if(req.method==='POST'&&pathname==='/api/outbox/add'){
    if(busy)throw fail(409,'Aguarde o término do envio para adicionar itens.');
    const b=await body(req,24_000);const record=validateSend(b,images,lastGroups);
+   if(clearedRequestIds.has(record.requestId))throw fail(409,'Esta tentativa já foi publicada anteriormente.');
    const item=enqueueItem(record,outbox,lastGroups,jobs);updateOutbox();
    audit('carga_enfileirada',{id:item.id,imageId:item.imageId,groupCount:item.groupIds.length});
    return json(res,201,{item});
@@ -220,6 +239,7 @@ async function request(req,res){
    if(busy)throw fail(409,'Já existe uma fila de envio em andamento.');
    const record=validateSend(b,images,lastGroups);
    const existing=jobs.find(j=>j.requestId===record.requestId);
+   if(clearedRequestIds.has(record.requestId))throw fail(409,'Esta tentativa já foi publicada anteriormente. Confira o WhatsApp antes de repetir.');
    if(existing)return json(res,409,{error:'Esta tentativa já foi registrada. Confira o histórico antes de repetir.',job:existing});
    if(mode==='real'&&!bridge.publicStatus().connected)throw fail(409,'WhatsApp não está conectado.');
    const job={id:randomUUID(),requestId:record.requestId,mode,status:'em_andamento',createdAt:new Date().toISOString(),origin:record.origin,destination:record.destination,vehicle:record.vehicle,imageId:record.image.id,groupIds:record.groupIds,progress:{done:0,total:record.groupIds.length},results:[]};

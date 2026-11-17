@@ -49,3 +49,33 @@ test('API permite preparar e publicar 12 artes independentes, em grupos diferent
  r=await post('/api/outbox/clear',{});assert.equal(r.status,200);assert.equal((await r.json()).removed,12);
  data=await get('/api/outbox');assert.equal(data.items.length,0);
 });
+
+
+test('histórico pode ser limpo sem apagar dados da fila e sem permitir repetição de publicação',async()=>{
+ const {groups}=await get('/api/groups');
+ const {images}=await get('/api/images');
+ const p={imageId:images[0].id,origin:'Timbó - SC',destination:'Guararapes - SP',vehicle:'Truck ou bitruck',caption:'Carga teste\nValores a negociar\n(11) 91234-5678',groupIds:[groups[0].id],requestId:randomUUID()};
+ let r=await post('/api/outbox/add',p);assert.equal(r.status,201);
+ const original=await get('/api/jobs');assert.equal(original.jobs.length,12);
+ r=await post('/api/jobs/clear',{});assert.equal(r.status,200);
+ const cleared=await r.json();assert.equal(cleared.removed,12);assert.equal(cleared.preserved,0);
+ const now=await get('/api/jobs');assert.equal(now.jobs.length,0);
+ const outbox=await get('/api/outbox');assert.equal(outbox.items.length,1);assert.equal(outbox.items[0].status,'pendente');
+ // Publicação finalizada ainda não pode ser reenviada após apagar a lista visível.
+ // A API só retorna os dados públicos, portanto as tentativas encerradas são verificadas pelo arquivo guardado.
+ const fs=await import('node:fs');
+ const archived=JSON.parse(fs.readFileSync(path.join(home,'data','cleared-request-ids.json'),'utf8'));
+ assert.equal(archived.length,12);
+ r=await post('/api/outbox/add',{...p,requestId:archived[0]});
+ assert.equal(r.status,409,'tentativa antiga continua bloqueada após limpar histórico');
+});
+
+
+test('assets da identidade visual são servidos localmente com tipo correto',async()=>{
+ for(const [url,mime] of [['/brand/alatus-emblem.png','image/png'],['/brand/alatus-wallpaper.webp','image/webp']]){
+  const response=await fetch(base()+url);
+  assert.equal(response.status,200);
+  assert.ok(response.headers.get('content-type')?.startsWith(mime));
+  assert.ok((await response.arrayBuffer()).byteLength>1000);
+ }
+});
