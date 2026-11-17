@@ -1,0 +1,74 @@
+{
+  "name": "alatus-publicador-desktop",
+  "productName": "ALATUS Publicador de Fretes",
+  "version": "0.6.1",
+  "private": true,
+  "description": "Aplicativo desktop para publicação de fretes com WhatsApp conectado localmente",
+  "main": "main.cjs",
+  "author": "Contribuidores ALATUS",
+  "license": "MIT",
+  "scripts": {
+    "test": "node --test tests/*.test.cjs",
+    "check": "node --check main.cjs && node --check lifecycle.cjs",
+    "dev": "electron .",
+    "dist:win": "electron-builder --win nsis --x64 --publish never"
+  },
+  "devDependencies": {
+    "electron": "45.3.3",
+    "electron-builder": "26.18.0"
+  },
+  "build": {
+    "appId": "br.com.alatus.publicador.fretes",
+    "productName": "ALATUS Publicador de Fretes",
+    "artifactName": "ALATUS-Instalador-${version}-${arch}.${ext}",
+    "directories": {
+      "output": "../dist/instalador"
+    },
+    "asar": true,
+    "files": [
+      "main.cjs",
+      "lifecycle.cjs",
+      "assets/**",
+      "package.json"
+    ],
+    "extraResources": [
+      {
+        "from": "../app",
+        "to": "backend",
+        "filter": [
+          "**/*",
+          "!tests/**",
+          "!tools/**",
+          "!*.ps1",
+          "!**/.gitignore",
+          "!data/**",
+          "!images/**",
+          "!logs/**",
+          "!session/**"
+        ]
+      }
+    ],
+    "win": {
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        }
+      ],
+      "icon": "assets/alatus.ico",
+      "executableName": "ALATUS Publicador"
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "ALATUS Publicador de Fretes",
+      "runAfterFinish": true,
+      "deleteAppDataOnUninstall": false
+    }
+  }
+}

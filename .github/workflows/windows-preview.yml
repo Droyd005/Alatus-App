@@ -1,0 +1,51 @@
+name: Windows Desktop - instalador de testes
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  build:
+    runs-on: windows-latest
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - name: Instalar backend (somente dependências de execução)
+        shell: pwsh
+        run: npm install --prefix app --omit=dev --no-audit --no-fund
+      - name: Instalar compilador desktop
+        shell: pwsh
+        run: npm install --prefix desktop --no-audit --no-fund
+      - name: Testar servidor e fila
+        shell: pwsh
+        run: |
+          npm --prefix app run check
+          npm --prefix app test
+      - name: Testar camada de desktop
+        shell: pwsh
+        run: |
+          npm --prefix desktop run check
+          npm --prefix desktop test
+      - name: Gerar instalador Windows NSIS 64 bits
+        shell: pwsh
+        run: npm --prefix desktop run dist:win
+      - name: Validar que o instalador e o backend estão no pacote
+        shell: pwsh
+        run: |
+          $installer = Get-ChildItem -Path dist/instalador -Filter 'ALATUS-Instalador-*.exe' -File
+          if ($installer.Count -ne 1) { throw '[CI-D01] Instalador não encontrado (esperado exatamente 1).' }
+          $backend = 'dist/instalador/win-unpacked/resources/backend'
+          if (-not (Test-Path "$backend/server.mjs")) { throw '[CI-D02] Servidor ausente do pacote.' }
+          if (-not (Test-Path "$backend/node_modules/baileys")) { throw '[CI-D03] Baileys ausente do pacote.' }
+          if (-not (Test-Path "$backend/node_modules/tesseract.js")) { throw '[CI-D04] OCR ausente do pacote.' }
+          Write-Host "Instalador pronto para teste: $($installer[0].Name) ($($installer[0].Length) bytes)"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ALATUS-Desktop-Instalador-v0.6.1-TESTE
+          path: dist/instalador/ALATUS-Instalador-*.exe
+          if-no-files-found: error
+          retention-days: 30

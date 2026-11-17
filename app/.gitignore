@@ -1,0 +1,11 @@
+node_modules/
+.env
+.env.*
+*.log
+# Dados locais, perfis e credenciais nunca sao versionados
+/data/
+/images/
+/logs/
+/backups/
+/session/
+*.session
