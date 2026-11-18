@@ -1,7 +1,7 @@
 {
   "name": "alatus-publicador-desktop",
   "productName": "ALATUS Publicador de Fretes",
-  "version": "0.7.7",
+  "version": "0.7.8",
   "private": true,
   "description": "Aplicativo desktop para publicação de fretes com WhatsApp conectado localmente",
   "main": "main.cjs",

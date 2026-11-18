@@ -61,7 +61,7 @@ test('03 lista grupos de teste',async()=>{
 });
 test('04 valida dados e executa sem caixa de autorização nem digitar ENVIAR',async()=>{
  const req={imageId,origin:'Curitiba - PR',destination:'Campinas - SP',vehicle:'Bitruck refrigerado',caption:'Frete de teste\nValores a negociar\n(11) 91234-5678',groupIds:[groupIds[0]],requestId:randomUUID()};
- let r=await post('/api/send',{...req,vehicle:''});assert.equal(r.status,422);
+ let r=await post('/api/send',{...req,groupIds:['invalido@g.us']});assert.equal(r.status,422);
  r=await post('/api/send',req);assert.equal(r.status,202);const {job:created}=await r.json();const job=await waitForJob(created.id);assert.equal(job.status,'simulado');assert.equal(job.results[0].status,'simulado');
  r=await post('/api/send',req);assert.equal(r.status,409);
  r=await fetch(base()+'/api/jobs');const js=await r.json();assert.equal(js.jobs.length,1);
