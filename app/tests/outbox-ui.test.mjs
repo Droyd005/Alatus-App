@@ -17,3 +17,13 @@ test('a fila reutilizável exige confirmação e não agenda envio automático',
  assert.match(js,/repeat:true,confirm:'REPETIR FILA'/);
  assert.match(html,/Reenviar fila salva/);
 });
+
+test('OCR e legenda são automáticos, sem interruptores e com campo de peso',()=>{
+ assert.match(html,/id="weight"/);
+ assert.ok(!html.includes('id="useOcr"'));
+ assert.ok(!html.includes('id="includeCaption"'));
+ assert.ok(!js.includes("$('useOcr')"));
+ assert.ok(!js.includes("$('includeCaption')"));
+ assert.match(js,/void pollOcr\(id\)/);
+ assert.match(js,/const complete=syncCaption\(true\)/);
+});

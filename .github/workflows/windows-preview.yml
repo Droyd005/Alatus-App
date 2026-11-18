@@ -31,6 +31,7 @@ jobs:
         run: |
           if (-not (Test-Path 'app/node_modules/baileys/package.json')) { throw '[CI-D00] Baileys ausente.' }
           if (-not (Test-Path 'app/node_modules/tesseract.js/package.json')) { throw '[CI-D00] Tesseract ausente.' }
+          if (-not (Test-Path 'app/node_modules/sharp/package.json')) { throw '[CI-D00] Sharp ausente.' }
       - name: Instalar dependencias desktop
         shell: pwsh
         run: npm install --prefix desktop --no-audit --no-fund
@@ -66,7 +67,7 @@ jobs:
           Write-Host "Instalador validado: $($inst[0].Name)"
       - uses: actions/upload-artifact@v4
         with:
-          name: ALATUS-Desktop-v0.7.9-TESTE
+          name: ALATUS-Desktop-v0.8.0-TESTE
           path: |
             dist/instalador/ALATUS-Instalador-*.exe
             dist/instalador/latest.yml

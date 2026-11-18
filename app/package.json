@@ -1,6 +1,6 @@
 {
   "name": "alatus-painel",
-  "version": "0.7.9",
+  "version": "0.8.0",
   "private": true,
   "type": "module",
   "description": "Painel local ALATUS com leitura OCR, legenda automatica e envio explicito para grupos selecionados",
@@ -13,7 +13,8 @@
     "baileys": "7.0.0-rc14",
     "pino": "9.6.0",
     "qrcode": "1.5.4",
-    "tesseract.js": "7.0.0"
+    "tesseract.js": "7.0.0",
+    "sharp": "0.34.5"
   },
   "engines": {
     "node": ">=20"

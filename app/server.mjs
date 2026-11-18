@@ -52,7 +52,7 @@ function queueOcr(id,force=false){
   try{
    const {parsed,confidence}=await recognizeImage(image);
    image.ocr={status:parsed.complete?'ready':'needs_review',confidence,method:parsed.method,
-      data:{origin:parsed.origin,destination:parsed.destination,vehicle:parsed.vehicle},
+      data:{origin:parsed.origin,destination:parsed.destination,vehicle:parsed.vehicle,weight:parsed.weight},
       missing:parsed.missing,rawText:parsed.text.slice(0,3500),updatedAt:new Date().toISOString()};
    audit('ocr_finalizado',{imageId:id,status:image.ocr.status,missing:parsed.missing});
   }catch(err){
@@ -230,7 +230,7 @@ async function request(req,res){
       const image=imageRecord(item.imageId);
       item.status='em_andamento';item.startedAt=new Date().toISOString();updateOutbox();
       const job={id:randomUUID(),requestId:item.requestId,mode,status:'em_andamento',createdAt:new Date().toISOString(),
-       origin:item.origin,destination:item.destination,vehicle:item.vehicle,imageId:image.id,groupIds:item.groupIds,
+       origin:item.origin,destination:item.destination,vehicle:item.vehicle,weight:item.weight||'',imageId:image.id,groupIds:item.groupIds,
        progress:{done:0,total:item.groupIds.length},results:[]};
       activeJobId=job.id;item.jobId=job.id;addJobs(job);
       audit('lote_carga_iniciada',{batchId,itemId:item.id,jobId:job.id,groupCount:item.groupIds.length});
@@ -269,7 +269,7 @@ async function request(req,res){
    if(clearedRequestIds.has(record.requestId))throw fail(409,'Esta tentativa já foi publicada anteriormente. Confira o WhatsApp antes de repetir.');
    if(existing)return json(res,409,{error:'Esta tentativa já foi registrada. Confira o histórico antes de repetir.',job:existing});
    if(mode==='real'&&!bridge.publicStatus().connected)throw fail(409,'WhatsApp não está conectado.');
-   const job={id:randomUUID(),requestId:record.requestId,mode,status:'em_andamento',createdAt:new Date().toISOString(),origin:record.origin,destination:record.destination,vehicle:record.vehicle,imageId:record.image.id,groupIds:record.groupIds,progress:{done:0,total:record.groupIds.length},results:[]};
+   const job={id:randomUUID(),requestId:record.requestId,mode,status:'em_andamento',createdAt:new Date().toISOString(),origin:record.origin,destination:record.destination,vehicle:record.vehicle,weight:record.weight||'',imageId:record.image.id,groupIds:record.groupIds,progress:{done:0,total:record.groupIds.length},results:[]};
    addJobs(job);busy=true;activeJobId=job.id;cancelActiveJob=false;
    audit('envio_iniciado',{id:job.id,mode,groupCount:record.groupIds.length,imageId:record.image.id});
    // Fila executada pelo servidor local; a interface consulta /api/jobs para progresso.

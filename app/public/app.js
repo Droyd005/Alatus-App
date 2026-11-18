@@ -12,13 +12,16 @@ const post=(endpoint,data)=>api(endpoint,{method:'POST',body:JSON.stringify(data
 function labelStatus(s){return ({simulacao:'SIMULAÇÃO (SEM ENVIO)',real:'MODO REAL'})[s]||s;}
 function setMode(newMode){mode=newMode;document.body.classList.remove('simulacao','real');document.body.classList.add(mode);}
 function syncCaption(silent=false){
- if(!$('includeCaption').checked){$('caption').value='';return true;}
- const origin=$('origin').value.trim().replace(/\n+/g,' + '),destination=$('destination').value.trim().replace(/\n+/g,' + '),vehicle=$('vehicle').value.trim();
- if(!profile.configured||!profile.company||!profile.phone){$('caption').value='';if(!silent)message('sendStatus','Configure empresa e contato para gerar a legenda.','warning');return false;}
- if(!origin||!destination||!vehicle){$('caption').value='';if(!silent)message('sendStatus','Preencha os campos ainda não reconhecidos para gerar a legenda.','warning');return false;}
- $('caption').value=`🚛 *${profile.company.toUpperCase()} | FRETE DISPONÍVEL*\n\n📍 *Coleta:* ${origin}\n🏁 *Entrega:* ${destination}\n🚚 *Veículo:* ${vehicle}\n\n💰 *Valores a negociar*\n📲 *${profile.phone}*`;
+ const origin=$('origin').value.trim().replace(/\n+/g,' + '),destination=$('destination').value.trim().replace(/\n+/g,' + '),vehicle=$('vehicle').value.trim(),weight=$('weight').value.trim();
+ if(!profile.configured||!profile.company||!profile.phone||!origin||!destination||!vehicle){
+  $('caption').value='';
+  if(!silent)message('sendStatus','Sem dados suficientes para gerar legenda. A imagem pode ser enviada sozinha.','warning');
+  return false;
+ }
+ $('caption').value=`🚛 *${profile.company.toUpperCase()} | FRETE DISPONÍVEL*\n\n📍 *Coleta:* ${origin}\n🏁 *Entrega:* ${destination}\n🚚 *Veículo:* ${vehicle}${weight?`\n⚖️ *Peso:* ${weight}`:''}\n\n💰 *Valores a negociar*\n📲 *${profile.phone}*`;
  return true;
 }
+
 async function loadProfile(){
  const data=await api('/api/profile');profile=data.profile;
  $('companyName').value=profile.company||'';$('companyPhone').value=profile.phone||'';
@@ -33,13 +36,12 @@ async function saveProfile(){try{
  await loadProfile();syncCaption(true);message('profileStatus','Perfil salvo. A legenda foi atualizada.','ok');
  }catch(e){message('profileStatus',e.message,'bad');}
 }
-function resetContent(){for(const id of ['origin','destination','vehicle','caption'])$(id).value='';customCaption=false;requestId=crypto.randomUUID();}
+function resetContent(){for(const id of ['origin','destination','vehicle','weight','caption'])$(id).value='';customCaption=false;requestId=crypto.randomUUID();}
 function imagePreview(id){
  imageId=id;++ocrSeq;resetContent();
  const image=$('preview');image.src='/api/image/'+encodeURIComponent(id);
  image.classList.remove('hidden');$('emptyPreview').classList.add('hidden');
- if($('useOcr').checked)void pollOcr(id);
- else message('ocrStatus','OCR dispensado. Você pode adicionar a imagem à fila sem preencher a legenda.','ok');
+ void pollOcr(id);
 }
 async function pollOcr(id){
  const seq=++ocrSeq;message('ocrStatus','Lendo o texto da imagem para gerar a legenda automaticamente…');
@@ -53,12 +55,12 @@ async function pollOcr(id){
    const ocr=info.ocr;
    if(ocr.status==='ready'||ocr.status==='needs_review'){
     const d=ocr.data||{};
-    if(id!==imageId||seq!==ocrSeq||!$('useOcr').checked)return;
-    $('origin').value=d.origin||'';$('destination').value=d.destination||'';$('vehicle').value=d.vehicle||'';
+    if(id!==imageId||seq!==ocrSeq)return;
+    $('origin').value=d.origin||'';$('destination').value=d.destination||'';$('vehicle').value=d.vehicle||'';$('weight').value=d.weight||'';
     customCaption=false;
     const complete=syncCaption(true);
     if(complete){message('ocrStatus',ocr.method==='ordem_da_arte'?'Legenda gerada automaticamente pela leitura da imagem. A sequência de cidades foi interpretada pela posição na arte; confira os dados acima.':'Legenda gerada automaticamente! Confira os dados detectados antes de usar.','ok');}
-    else message('ocrStatus','OCR parcial: '+(ocr.missing||[]).join(', ')+'. Você pode corrigir os campos ou enviar somente a imagem.','warning');
+    else message('ocrStatus','OCR parcial: '+(ocr.missing||[]).join(', ')+'. A imagem será enviada sem legenda, a menos que você complete os dados.','warning');
     return;
    }
    if(ocr.status==='error'){
@@ -78,7 +80,7 @@ async function fileUpload(file,selectAfter=true){if(!file)return;if(!/^image\/(p
  message('uploadStatus','Importando imagem…');
  try{
   const data=await new Promise((resolve,reject)=>{const reader=new FileReader();reader.onload=()=>resolve(reader.result);reader.onerror=()=>reject(new Error('Falha ao ler imagem.'));reader.readAsDataURL(file);});
-  const res=await post('/api/upload',{data,filename:file.name,skipOcr:!$('useOcr').checked});if(selectAfter)imagePreview(res.image.id);await refreshImages();message('uploadStatus',`Imagem importada: ${file.name}`,'ok');
+  const res=await post('/api/upload',{data,filename:file.name});if(selectAfter)imagePreview(res.image.id);await refreshImages();message('uploadStatus',`Imagem importada: ${file.name}`,'ok');
  }catch(e){message('uploadStatus',e.message,'bad');}}
 async function uploadFiles(list){
  const files=[...list];if(!files.length)return;
@@ -86,14 +88,13 @@ async function uploadFiles(list){
   message('uploadStatus',`Importando imagem ${i+1}/${files.length}: ${files[i].name}`);
   await fileUpload(files[i],i===files.length-1);
  }
- message('uploadStatus',`${files.length} arquivo(s) processado(s). Escolha uma arte e adicione à fila; OCR e legenda são opcionais.`, 'ok');
+ message('uploadStatus',`${files.length} arquivo(s) processado(s). Escolha uma arte para conferir a leitura automática. Se não houver legenda, poderá enviar somente a imagem.`, 'ok');
 }
 function currentPublication(){
  if(!imageId)throw new Error('Selecione uma imagem.');
  const groupIds=selectedGroups();if(!groupIds.length)throw new Error('Selecione ao menos um grupo para esta carga.');
- const origin=$('origin').value.trim().replace(/\n+/g,' + '),destination=$('destination').value.trim().replace(/\n+/g,' + '),vehicle=$('vehicle').value.trim();
- const caption=$('includeCaption').checked?$('caption').value.trim():'';
- return {imageId,origin,destination,vehicle,caption,groupIds,requestId};
+ const origin=$('origin').value.trim().replace(/\n+/g,' + '),destination=$('destination').value.trim().replace(/\n+/g,' + '),vehicle=$('vehicle').value.trim(),weight=$('weight').value.trim(),caption=$('caption').value.trim();
+ return {imageId,origin,destination,vehicle,weight,caption,groupIds,requestId};
 }
 async function addToOutbox(){
  if(isBusy||activeBatchId)return;
@@ -207,7 +208,7 @@ async function publish(){if(isBusy)return;const groupIds=selectedGroups();if(!im
  if(!groupIds.length){message('sendStatus','Selecione pelo menos um grupo.','bad');return;}
  // Este botão é o único comando explícito de envio. Não existe disparo ao importar a imagem.
  isBusy=true;$('send').disabled=true;message('sendStatus',mode==='real'?'Enviando para os grupos selecionados…':'Simulando envio…');
- const payload={imageId,origin:$('origin').value.trim().replace(/\n+/g,' + '),destination:$('destination').value.trim().replace(/\n+/g,' + '),vehicle:$('vehicle').value.trim(),caption:$('includeCaption').checked?$('caption').value.trim():'',groupIds,requestId};
+ const payload={imageId,origin:$('origin').value.trim().replace(/\n+/g,' + '),destination:$('destination').value.trim().replace(/\n+/g,' + '),vehicle:$('vehicle').value.trim(),weight:$('weight').value.trim(),caption:$('caption').value.trim(),groupIds,requestId};
  try{const ret=await post('/api/send',payload);requestId=crypto.randomUUID();
  message('sendStatus',`Fila iniciada: ${ret.job.progress.total} grupo(s) selecionado(s). O histórico será atualizado automaticamente.`, 'ok');await loadJobs();
  }catch(e){message('sendStatus',e.message,'bad');await loadJobs();}
@@ -217,23 +218,7 @@ $('drop').addEventListener('click',()=>$('file').click());$('drop').addEventList
 $('drop').addEventListener('dragover',e=>{e.preventDefault();$('drop').classList.add('drag');});$('drop').addEventListener('dragleave',()=>$('drop').classList.remove('drag'));
 $('drop').addEventListener('drop',e=>{e.preventDefault();$('drop').classList.remove('drag');void uploadFiles(e.dataTransfer.files);});$('file').addEventListener('change',e=>{void uploadFiles(e.target.files);e.target.value='';});
 $('recent').addEventListener('change',e=>{if(e.target.value)imagePreview(e.target.value);});
-// Na instalação, só imagem é o padrão: OCR e legenda desativados.
-$('caption').disabled=!$('includeCaption').checked;
-$('generate').disabled=!$('includeCaption').checked;
-$('copy').disabled=!$('includeCaption').checked;
-$('useOcr').addEventListener('change',()=>{
- ++ocrSeq; // ignora resultados da leitura anterior se a opção for desmarcada
- if($('useOcr').checked&&imageId)void pollOcr(imageId);
- else message('ocrStatus','OCR desativado. Imagens podem ser publicadas sem leitura.','ok');
-});
-$('includeCaption').addEventListener('change',()=>{
- const enabled=$('includeCaption').checked;
- $('caption').disabled=!enabled;$('generate').disabled=!enabled;$('copy').disabled=!enabled;
- requestId=crypto.randomUUID();
- if(!enabled){$('caption').value='';customCaption=true;}
- else{customCaption=false;syncCaption(true);}
-});
-for(const id of ['origin','destination','vehicle'])$(id).addEventListener('input',()=>{requestId=crypto.randomUUID();if(!customCaption)syncCaption(true);});
+for(const id of ['origin','destination','vehicle','weight'])$(id).addEventListener('input',()=>{requestId=crypto.randomUUID();if(!customCaption)syncCaption(true);});
 $('caption').addEventListener('input',()=>{customCaption=true;requestId=crypto.randomUUID();});
 $('generate').addEventListener('click',()=>{customCaption=false;syncCaption();});
 $('copy').addEventListener('click',async()=>{try{await navigator.clipboard.writeText($('caption').value);message('sendStatus','Legenda copiada.','ok');}catch{message('sendStatus','Não foi possível copiar. Selecione o texto manualmente.','bad');}});

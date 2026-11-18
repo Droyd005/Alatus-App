@@ -45,9 +45,9 @@ export function validateProfile(body){
  return {company,phone,configured:true};
 }
 export function persistProfile(body){const p=validateProfile(body);saveJson(DATA.profile,p);audit('perfil_atualizado',{company:p.company});return p;}
-export function makeCaption({origin,destination,vehicle},p=getProfile()) {
+export function makeCaption({origin,destination,vehicle,weight=""},p=getProfile()) {
  if(!p.configured||!p.company||!p.phone)throw fail(422,'Configure a empresa e o telefone antes de gerar a legenda.');
- return `🚛 *${p.company.toUpperCase()} | FRETE DISPONÍVEL*\n\n📍 *Coleta:* ${requireText(origin,'origem',300)}\n🏁 *Entrega:* ${requireText(destination,'destino',300)}\n🚚 *Veículo:* ${requireText(vehicle,'veículo',160)}\n\n💰 *Valores a negociar*\n📲 *${p.phone}*`;
+ return `🚛 *${p.company.toUpperCase()} | FRETE DISPONÍVEL*\n\n📍 *Coleta:* ${requireText(origin,'origem',300)}\n🏁 *Entrega:* ${requireText(destination,'destino',300)}\n🚚 *Veículo:* ${requireText(vehicle,'veículo',160)}${weight?`\n⚖️ *Peso:* ${requireText(weight,'peso',60)}`:''}\n\n💰 *Valores a negociar*\n📲 *${p.phone}*`;
 }
 export function validateSend(body, images, groups) {
  if(!body || typeof body!=='object')throw fail(400,'Dados inválidos.');
@@ -59,7 +59,7 @@ export function validateSend(body, images, groups) {
   if(typeof value!=='string'||value.length>max)throw fail(422,`${name} deve ter até ${max} caracteres.`);
   return value.trim();
  }
- const origin=optionalText(body.origin,'Origem',300),destination=optionalText(body.destination,'Destino',300),vehicle=optionalText(body.vehicle,'Veículo',160);
+ const origin=optionalText(body.origin,'Origem',300),destination=optionalText(body.destination,'Destino',300),vehicle=optionalText(body.vehicle,'Veículo',160),weight=optionalText(body.weight,'Peso',60);
  const caption=optionalText(body.caption,'Legenda',2500);
  if(caption){
   const profile=getProfile();
@@ -69,5 +69,5 @@ export function validateSend(body, images, groups) {
  if(!Array.isArray(body.groupIds)||body.groupIds.length<1||body.groupIds.length>groups.length||new Set(body.groupIds).size!==body.groupIds.length)throw fail(422,'Selecione pelo menos um grupo válido, sem repetir grupos.');
  if(body.groupIds.some(id=>!groups.some(g=>g.id===id)))throw fail(422,'Lista de grupos desatualizada. Atualize e selecione novamente.');
  if(!/^[a-f\d-]{36}$/.test(String(body.requestId||'')))throw fail(422,'Identificador de tentativa inválido. Recarregue o painel.');
- return {image:record, origin,destination,vehicle,caption,groupIds:body.groupIds,requestId:body.requestId};
+ return {image:record, origin,destination,vehicle,weight,caption,groupIds:body.groupIds,requestId:body.requestId};
 }

@@ -10,7 +10,7 @@ export function enqueueItem(record, items, groups, jobs=[]){
  if(items.some(x=>x.requestId===record.requestId)||jobs.some(x=>x.requestId===record.requestId))throw Object.assign(new Error('Esta carga já foi adicionada ou enviada. Confira a fila antes de repetir.'),{status:409});
  const names=new Map(groups.map(x=>[x.id,x.name]));
  const item={id:randomUUID(),requestId:record.requestId,status:'pendente',createdAt:new Date().toISOString(),
-  imageId:record.image.id,origin:record.origin,destination:record.destination,vehicle:record.vehicle,
+  imageId:record.image.id,origin:record.origin,destination:record.destination,vehicle:record.vehicle,weight:record.weight||'',
   caption:record.caption,groupIds:[...record.groupIds],groupNames:record.groupIds.map(id=>names.get(id)||id),
   progress:{done:0,total:record.groupIds.length},results:[],sendCount:0,lastSentAt:null};
  items.push(item);
