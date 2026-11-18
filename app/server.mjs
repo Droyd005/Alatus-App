@@ -102,7 +102,14 @@ async function request(req,res){
    return text(res,200,fs.readFileSync(path.join(DIR.images,image.file)),image.mime);
   }
   if(req.method==='POST'&&pathname==='/api/upload'){
-   const b=await body(req);const record=imageUpload(b.data,b.filename||'arte',images);queueOcr(record.id);return json(res,201,{image:record,ocrStatus:'processing'});
+   const b=await body(req);const record=imageUpload(b.data,b.filename||'arte',images);
+    if(b.skipOcr===true){
+     const saved=imageRecord(record.id);
+     saved.ocr={status:'skipped',data:null,updatedAt:new Date().toISOString()};
+     saveJson(DATA.images,images);
+     return json(res,201,{image:record,ocrStatus:'skipped'});
+    }
+    queueOcr(record.id);return json(res,201,{image:record,ocrStatus:'processing'});
   }
   if(req.method==='GET'&&pathname.startsWith('/api/ocr/')) {
    const image=imageRecord(pathname.split('/').pop());

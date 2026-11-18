@@ -12,6 +12,7 @@ const post=(endpoint,data)=>api(endpoint,{method:'POST',body:JSON.stringify(data
 function labelStatus(s){return ({simulacao:'SIMULAÇÃO (SEM ENVIO)',real:'MODO REAL'})[s]||s;}
 function setMode(newMode){mode=newMode;document.body.classList.remove('simulacao','real');document.body.classList.add(mode);}
 function syncCaption(silent=false){
+ if(!$('includeCaption').checked){$('caption').value='';return true;}
  const origin=$('origin').value.trim().replace(/\n+/g,' + '),destination=$('destination').value.trim().replace(/\n+/g,' + '),vehicle=$('vehicle').value.trim();
  if(!profile.configured||!profile.company||!profile.phone){$('caption').value='';if(!silent)message('sendStatus','Configure empresa e contato para gerar a legenda.','warning');return false;}
  if(!origin||!destination||!vehicle){$('caption').value='';if(!silent)message('sendStatus','Preencha os campos ainda não reconhecidos para gerar a legenda.','warning');return false;}
@@ -33,25 +34,31 @@ async function saveProfile(){try{
  }catch(e){message('profileStatus',e.message,'bad');}
 }
 function resetContent(){for(const id of ['origin','destination','vehicle','caption'])$(id).value='';customCaption=false;requestId=crypto.randomUUID();}
-function imagePreview(id){imageId=id;resetContent();const image=$('preview');image.src='/api/image/'+encodeURIComponent(id);image.classList.remove('hidden');$('emptyPreview').classList.add('hidden');void pollOcr(id);}
+function imagePreview(id){
+ imageId=id;++ocrSeq;resetContent();
+ const image=$('preview');image.src='/api/image/'+encodeURIComponent(id);
+ image.classList.remove('hidden');$('emptyPreview').classList.add('hidden');
+ if($('useOcr').checked)void pollOcr(id);
+ else message('ocrStatus','OCR dispensado. Você pode adicionar a imagem à fila sem preencher a legenda.','ok');
+}
 async function pollOcr(id){
  const seq=++ocrSeq;message('ocrStatus','Lendo o texto da imagem para gerar a legenda automaticamente…');
  let attempts=0;
  while(id===imageId&&seq===ocrSeq&&attempts++<90){
   try{
    let info=await api('/api/ocr/'+encodeURIComponent(id));
-   if(info.ocr.status==='not_started'){
+   if(info.ocr.status==='not_started'||info.ocr.status==='skipped'){
     info=await post('/api/analyze/'+encodeURIComponent(id),{});
    }
    const ocr=info.ocr;
    if(ocr.status==='ready'||ocr.status==='needs_review'){
     const d=ocr.data||{};
-    if(id!==imageId||seq!==ocrSeq)return;
+    if(id!==imageId||seq!==ocrSeq||!$('useOcr').checked)return;
     $('origin').value=d.origin||'';$('destination').value=d.destination||'';$('vehicle').value=d.vehicle||'';
     customCaption=false;
     const complete=syncCaption(true);
     if(complete){message('ocrStatus',ocr.method==='ordem_da_arte'?'Legenda gerada automaticamente pela leitura da imagem. A sequência de cidades foi interpretada pela posição na arte; confira os dados acima.':'Legenda gerada automaticamente! Confira os dados detectados antes de usar.','ok');}
-    else message('ocrStatus','Reconhecimento parcial. Não consegui identificar: '+(ocr.missing||[]).join(', ')+'. Complete os campos acima para gerar a legenda automaticamente.','warning');
+    else message('ocrStatus','OCR parcial: '+(ocr.missing||[]).join(', ')+'. Você pode corrigir os campos ou enviar somente a imagem.','warning');
     return;
    }
    if(ocr.status==='error'){
@@ -71,7 +78,7 @@ async function fileUpload(file,selectAfter=true){if(!file)return;if(!/^image\/(p
  message('uploadStatus','Importando imagem…');
  try{
   const data=await new Promise((resolve,reject)=>{const reader=new FileReader();reader.onload=()=>resolve(reader.result);reader.onerror=()=>reject(new Error('Falha ao ler imagem.'));reader.readAsDataURL(file);});
-  const res=await post('/api/upload',{data,filename:file.name});if(selectAfter)imagePreview(res.image.id);await refreshImages();message('uploadStatus',`Imagem importada: ${file.name}`,'ok');
+  const res=await post('/api/upload',{data,filename:file.name,skipOcr:!$('useOcr').checked});if(selectAfter)imagePreview(res.image.id);await refreshImages();message('uploadStatus',`Imagem importada: ${file.name}`,'ok');
  }catch(e){message('uploadStatus',e.message,'bad');}}
 async function uploadFiles(list){
  const files=[...list];if(!files.length)return;
@@ -79,14 +86,13 @@ async function uploadFiles(list){
   message('uploadStatus',`Importando imagem ${i+1}/${files.length}: ${files[i].name}`);
   await fileUpload(files[i],i===files.length-1);
  }
- message('uploadStatus',`${files.length} arquivo(s) processado(s). Escolha uma arte na lista, aguarde o OCR e adicione à fila.`, 'ok');
+ message('uploadStatus',`${files.length} arquivo(s) processado(s). Escolha uma arte e adicione à fila; OCR e legenda são opcionais.`, 'ok');
 }
 function currentPublication(){
- if(!profile.configured)throw new Error('Configure empresa e telefone no topo do painel.');
  if(!imageId)throw new Error('Selecione uma imagem.');
  const groupIds=selectedGroups();if(!groupIds.length)throw new Error('Selecione ao menos um grupo para esta carga.');
- const origin=$('origin').value.trim().replace(/\n+/g,' + '),destination=$('destination').value.trim().replace(/\n+/g,' + '),vehicle=$('vehicle').value.trim(),caption=$('caption').value.trim();
- if(!origin||!destination||!vehicle||!caption)throw new Error('Aguarde o OCR e confira origem, destino, veículo e legenda.');
+ const origin=$('origin').value.trim().replace(/\n+/g,' + '),destination=$('destination').value.trim().replace(/\n+/g,' + '),vehicle=$('vehicle').value.trim();
+ const caption=$('includeCaption').checked?$('caption').value.trim():'';
  return {imageId,origin,destination,vehicle,caption,groupIds,requestId};
 }
 async function addToOutbox(){
@@ -144,8 +150,8 @@ async function loadOutbox(){
    const box=document.createElement('div');box.className='outbox-item';
    const thumb=document.createElement('img');thumb.className='outbox-thumb';thumb.alt='Prévia da carga';thumb.src='/api/image/'+encodeURIComponent(item.imageId);
    const info=document.createElement('div');info.className='outbox-info';
-   const title=document.createElement('strong');title.textContent=`${index+1}. ${item.origin} → ${item.destination}`;
-   const details=document.createElement('div');details.className='muted';const times=Number.isInteger(item.sendCount)?item.sendCount:(['simulado','submetido'].includes(item.status)?1:0);details.textContent=`${item.vehicle} • ${item.groupIds.length} grupos • ${item.status} • ${item.progress?.done||0}/${item.progress?.total||0} • ${times} rodada(s) concluída(s)`;
+   const title=document.createElement('strong');title.textContent=item.origin&&item.destination?`${index+1}. ${item.origin} → ${item.destination}`:`${index+1}. Imagem ${item.imageId?.slice(0,8)||'sem rota'}`;
+   const details=document.createElement('div');details.className='muted';const times=Number.isInteger(item.sendCount)?item.sendCount:(['simulado','submetido'].includes(item.status)?1:0);details.textContent=`${item.vehicle||'Veículo não informado'} • ${item.caption?'com legenda':'imagem sem legenda'} • ${item.groupIds.length} grupos • ${item.status} • ${item.progress?.done||0}/${item.progress?.total||0} • ${times} rodada(s) concluída(s)`;
    const destinations=document.createElement('div');destinations.className='muted';destinations.textContent=(item.groupNames||[]).join(' · ');
    info.append(title,details,destinations);
    if(item.error){const err=document.createElement('div');err.className='bad';err.textContent=item.error;info.append(err);}
@@ -193,16 +199,15 @@ async function loadJobs(){try{const data=await api('/api/jobs');
  }
  $('history').replaceChildren();for(const j of data.jobs){const div=document.createElement('div');div.className='history';
   const summary=document.createElement('div');summary.className='job-status';summary.textContent=`${new Date(j.createdAt).toLocaleString('pt-BR')} | ${j.mode} | ${j.status}${j.progress?' | '+j.progress.done+'/'+j.progress.total:''}`;div.append(summary);
-  const line=document.createElement('div');line.textContent=`${j.origin} → ${j.destination}`;div.append(line);
+  const line=document.createElement('div');line.textContent=j.origin&&j.destination?`${j.origin} → ${j.destination}`:'Imagem enviada sem rota informada';div.append(line);
   for(const r of j.results||[]){const detail=document.createElement('div');detail.textContent=`• ${r.groupName}: ${r.status}${r.error?' ('+r.error+')':''}`;div.append(detail);}
   $('history').append(div);}if(!data.jobs.length)$('history').textContent='Sem publicações registradas.';
  }catch(e){$('history').textContent=e.message;}}
-async function publish(){if(isBusy)return;if(!profile.configured){message('sendStatus','Configure empresa e telefone no topo do painel.','bad');$('companySettings').open=true;return;}const groupIds=selectedGroups();if(!imageId){message('sendStatus','Selecione uma arte primeiro.','bad');return;}
+async function publish(){if(isBusy)return;const groupIds=selectedGroups();if(!imageId){message('sendStatus','Selecione uma arte primeiro.','bad');return;}
  if(!groupIds.length){message('sendStatus','Selecione pelo menos um grupo.','bad');return;}
- if(!($('origin').value.trim()&&$('destination').value.trim()&&$('vehicle').value.trim()&&$('caption').value.trim())){message('sendStatus','Os dados da carga estão incompletos. Corrija antes de enviar.','bad');return;}
  // Este botão é o único comando explícito de envio. Não existe disparo ao importar a imagem.
  isBusy=true;$('send').disabled=true;message('sendStatus',mode==='real'?'Enviando para os grupos selecionados…':'Simulando envio…');
- const payload={imageId,origin:$('origin').value.trim().replace(/\n+/g,' + '),destination:$('destination').value.trim().replace(/\n+/g,' + '),vehicle:$('vehicle').value.trim(),caption:$('caption').value.trim(),groupIds,requestId};
+ const payload={imageId,origin:$('origin').value.trim().replace(/\n+/g,' + '),destination:$('destination').value.trim().replace(/\n+/g,' + '),vehicle:$('vehicle').value.trim(),caption:$('includeCaption').checked?$('caption').value.trim():'',groupIds,requestId};
  try{const ret=await post('/api/send',payload);requestId=crypto.randomUUID();
  message('sendStatus',`Fila iniciada: ${ret.job.progress.total} grupo(s) selecionado(s). O histórico será atualizado automaticamente.`, 'ok');await loadJobs();
  }catch(e){message('sendStatus',e.message,'bad');await loadJobs();}
@@ -212,6 +217,22 @@ $('drop').addEventListener('click',()=>$('file').click());$('drop').addEventList
 $('drop').addEventListener('dragover',e=>{e.preventDefault();$('drop').classList.add('drag');});$('drop').addEventListener('dragleave',()=>$('drop').classList.remove('drag'));
 $('drop').addEventListener('drop',e=>{e.preventDefault();$('drop').classList.remove('drag');void uploadFiles(e.dataTransfer.files);});$('file').addEventListener('change',e=>{void uploadFiles(e.target.files);e.target.value='';});
 $('recent').addEventListener('change',e=>{if(e.target.value)imagePreview(e.target.value);});
+// Na instalação, só imagem é o padrão: OCR e legenda desativados.
+$('caption').disabled=!$('includeCaption').checked;
+$('generate').disabled=!$('includeCaption').checked;
+$('copy').disabled=!$('includeCaption').checked;
+$('useOcr').addEventListener('change',()=>{
+ ++ocrSeq; // ignora resultados da leitura anterior se a opção for desmarcada
+ if($('useOcr').checked&&imageId)void pollOcr(imageId);
+ else message('ocrStatus','OCR desativado. Imagens podem ser publicadas sem leitura.','ok');
+});
+$('includeCaption').addEventListener('change',()=>{
+ const enabled=$('includeCaption').checked;
+ $('caption').disabled=!enabled;$('generate').disabled=!enabled;$('copy').disabled=!enabled;
+ requestId=crypto.randomUUID();
+ if(!enabled){$('caption').value='';customCaption=true;}
+ else{customCaption=false;syncCaption(true);}
+});
 for(const id of ['origin','destination','vehicle'])$(id).addEventListener('input',()=>{requestId=crypto.randomUUID();if(!customCaption)syncCaption(true);});
 $('caption').addEventListener('input',()=>{customCaption=true;requestId=crypto.randomUUID();});
 $('generate').addEventListener('click',()=>{customCaption=false;syncCaption();});

@@ -52,10 +52,20 @@ export function makeCaption({origin,destination,vehicle},p=getProfile()) {
 export function validateSend(body, images, groups) {
  if(!body || typeof body!=='object')throw fail(400,'Dados inválidos.');
  const record=images.find(im=>im.id===body.imageId);if(!record)throw fail(422,'Selecione primeiro uma imagem válida.');
- const origin=requireText(body.origin,'origem',300),destination=requireText(body.destination,'destino',300),vehicle=requireText(body.vehicle,'veículo',160);
- let caption=requireText(body.caption,'legenda',2500);
- const profile=getProfile();if(!profile.configured)throw fail(422,'Configure o perfil antes de enviar.');
- if(!caption.includes('Valores a negociar') || !caption.includes(profile.phone))throw fail(422,'A legenda deve manter “Valores a negociar” e o contato cadastrado.');
+ // OCR e legenda são opcionais. Só a imagem válida e os grupos são obrigatórios.
+ // Campos vazios não recebem dados inventados nem bloqueiam a publicação.
+ function optionalText(value,name,max){
+  if(value==null)return '';
+  if(typeof value!=='string'||value.length>max)throw fail(422,`${name} deve ter até ${max} caracteres.`);
+  return value.trim();
+ }
+ const origin=optionalText(body.origin,'Origem',300),destination=optionalText(body.destination,'Destino',300),vehicle=optionalText(body.vehicle,'Veículo',160);
+ const caption=optionalText(body.caption,'Legenda',2500);
+ if(caption){
+  const profile=getProfile();
+  if(!profile.configured)throw fail(422,'Configure o perfil para enviar uma legenda. Para enviar só a imagem, deixe a legenda vazia.');
+  if(!caption.includes('Valores a negociar') || !caption.includes(profile.phone))throw fail(422,'A legenda deve manter “Valores a negociar” e o contato cadastrado.');
+ }
  if(!Array.isArray(body.groupIds)||body.groupIds.length<1||body.groupIds.length>groups.length||new Set(body.groupIds).size!==body.groupIds.length)throw fail(422,'Selecione pelo menos um grupo válido, sem repetir grupos.');
  if(body.groupIds.some(id=>!groups.some(g=>g.id===id)))throw fail(422,'Lista de grupos desatualizada. Atualize e selecione novamente.');
  if(!/^[a-f\d-]{36}$/.test(String(body.requestId||'')))throw fail(422,'Identificador de tentativa inválido. Recarregue o painel.');

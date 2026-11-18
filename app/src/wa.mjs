@@ -170,7 +170,9 @@ export class WhatsAppBridge {
   if(this.status!=='conectado'||!this.socket)throw new Error('WhatsApp desconectado antes de enviar.');
   if(!this.lastGroups.some(g=>g.id===groupId))throw new Error('Grupo não consta na lista verificada pelo WhatsApp.');
   const image=Buffer.isBuffer(imagePath)?imagePath:{url:imagePath};
-  const result=await this.socket.sendMessage(groupId,{image,caption});
+  // Baileys: imagem pura (sem propriedade caption) quando usuário desativa a legenda.
+  const message=typeof caption==='string'&&caption.trim()?{image,caption}:{image};
+  const result=await this.socket.sendMessage(groupId,message);
   if(!result?.key?.id)throw new Error('WhatsApp não retornou identificador da mensagem. Resultado incerto.');
   return {simulated:false,messageId:result.key.id};
  }

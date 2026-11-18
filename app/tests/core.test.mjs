@@ -32,7 +32,8 @@ test('exige grupos e legenda com texto fixo (sem senha nem confirmação extra)'
  const im={id:randomUUID()};const groups=[{id:'teste@g.us',name:'Teste'}];
  const b={imageId:im.id,origin:'Origem',destination:'Destino',vehicle:'Refrigerado',caption:'Valores a negociar — (11) 91234-5678',groupIds:['teste@g.us'],requestId:randomUUID()};
  assert.equal(core.validateSend(b,[im],groups).requestId,b.requestId);
- assert.throws(()=>core.validateSend({...b,origin:''},[im],groups),/origem/);
+ assert.equal(core.validateSend({...b,origin:''},[im],groups).origin,'');
+ assert.equal(core.validateSend({...b,caption:''},[im],groups).caption,'');
  assert.throws(()=>core.validateSend({...b,caption:'sem contato'},[im],groups),/contato cadastrado/);
  assert.throws(()=>core.validateSend({...b,groupIds:['outro@g.us']},[im],groups),/desatualizada/);
  assert.throws(()=>core.validateSend({...b,groupIds:['teste@g.us','teste@g.us']},[im],groups),/sem repetir grupos/);
