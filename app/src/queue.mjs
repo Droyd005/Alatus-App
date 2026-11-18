@@ -1,5 +1,6 @@
 // A fila não tenta contornar limites do WhatsApp e nunca reenvia automaticamente.
 // Uma tentativa ambígua interrompe o restante para evitar duplicação.
+import {performance} from 'node:perf_hooks';
 export async function processPublicationQueue({job,record,bridge,groupNames,afterGroup=()=>{},timeoutMs=45000,isCancelRequested=()=>false}){
  const ids=record.groupIds;
  job.progress={done:0,total:ids.length};
@@ -18,17 +19,17 @@ export async function processPublicationQueue({job,record,bridge,groupNames,afte
   if(isCancelRequested())break;
   // Não aguarda intervalo artificial: só prossegue quando o envio anterior termina.
   const id=ids[i],name=groupNames.get(id)||id;
-  let timer,hadTimeout=false;
+  let timer,hadTimeout=false;const sentAt=performance.now();
   try{
    // sendMessage não expõe cancelamento confiável. Em timeout, o resultado é incerto.
    const result=await Promise.race([
     bridge.send(id,media,record.caption),
     new Promise((_,reject)=>{timer=setTimeout(()=>{hadTimeout=true;reject(new Error('Tempo limite de envio. Resultado incerto; confira o grupo antes de repetir.'));},timeoutMs);})
    ]);
-   job.results.push({groupId:id,groupName:name,status:result.simulated?'simulado':'submetido',messageId:result.messageId});
+   job.results.push({groupId:id,groupName:name,status:result.simulated?'simulado':'submetido',messageId:result.messageId,elapsedMs:Math.round(performance.now()-sentAt)});
   }catch(e){
    uncertain=true;timedOut=hadTimeout;
-   job.results.push({groupId:id,groupName:name,status:'incerto',error:String(e.message||e).slice(0,350)});
+   job.results.push({groupId:id,groupName:name,status:'incerto',error:String(e.message||e).slice(0,350),elapsedMs:Math.round(performance.now()-sentAt)});
   }finally{
    clearTimeout(timer);job.progress.done=job.results.length;
    await afterGroup(job,job.results[job.results.length-1]);

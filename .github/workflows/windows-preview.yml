@@ -66,7 +66,7 @@ jobs:
           Write-Host "Instalador validado: $($inst[0].Name)"
       - uses: actions/upload-artifact@v4
         with:
-          name: ALATUS-Desktop-v0.7.8-TESTE
+          name: ALATUS-Desktop-v0.7.9-TESTE
           path: |
             dist/instalador/ALATUS-Instalador-*.exe
             dist/instalador/latest.yml

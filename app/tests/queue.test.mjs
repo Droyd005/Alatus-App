@@ -11,7 +11,7 @@ test('envio sequencial para 25 grupos, nunca em paralelo',async()=>{
  const args=fixture(25);let inFlight=0,max=0,calls=0;
  const bridge={send:async()=>{inFlight++;max=Math.max(max,inFlight);await new Promise(r=>setTimeout(r,1));inFlight--;return {messageId:String(++calls),simulated:false};}};
  const result=await processPublicationQueue({...args,bridge});
- assert.equal(max,1);assert.equal(result.uncertain,false);assert.equal(args.job.status,'submetido');assert.equal(args.job.results.length,25);assert.equal(args.job.progress.done,25);
+ assert.equal(max,1);assert.equal(result.uncertain,false);assert.equal(args.job.status,'submetido');assert.equal(args.job.results.length,25);assert.ok(args.job.results.every(x=>x.elapsedMs>=0));assert.equal(args.job.progress.done,25);
 });
 test('em caso de falha, interrompe o restante e não tenta reenviar',async()=>{
  const args=fixture(22);let calls=0;

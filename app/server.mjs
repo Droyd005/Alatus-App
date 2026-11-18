@@ -237,7 +237,7 @@ async function request(req,res){
       try{
        const outcome=await processPublicationQueue({job,record:{...item,imagePath:path.join(DIR.images,image.file)},bridge,
         groupNames,isCancelRequested:()=>cancelActiveJob||serverShuttingDown,
-        afterGroup:async(j,result)=>{item.progress={...j.progress};item.results=[...j.results];updateJobs();updateOutbox();audit('envio_lote_grupo',{batchId,itemId:item.id,groupId:result.groupId,status:result.status});}
+        afterGroup:async(j,result)=>{item.progress={...j.progress};item.results=[...j.results];updateJobs();updateOutbox();audit('envio_lote_grupo',{batchId,itemId:item.id,groupId:result.groupId,status:result.status,elapsedMs:result.elapsedMs});}
        });
        item.status=job.status;item.results=[...job.results];item.progress={...job.progress};item.finishedAt=job.finishedAt;
        if(REPEATABLE_STATUSES.has(job.status)){item.sendCount=(Number.isInteger(item.sendCount)?item.sendCount:0)+1;item.lastSentAt=job.finishedAt;}
@@ -278,7 +278,7 @@ async function request(req,res){
      const outcome=await processPublicationQueue({job,record:{...record,imagePath:path.join(DIR.images,record.image.file)},bridge,
       groupNames:new Map(lastGroups.map(g=>[g.id,g.name])),
       isCancelRequested:()=>cancelActiveJob,
-      afterGroup:async(j,result)=>{updateJobs();audit('envio_grupo',{jobId:j.id,groupId:result.groupId,status:result.status});}
+      afterGroup:async(j,result)=>{updateJobs();audit('envio_grupo',{jobId:j.id,groupId:result.groupId,status:result.status,elapsedMs:result.elapsedMs});}
      });
      if(outcome.timedOut){uncertainSendBlock=true;audit('envio_bloqueado_apos_timeout',{jobId:job.id});}
     }catch(e){job.status='revisar_manualmente';job.error=String(e.message||e).slice(0,300);audit('envio_falha_interna',{jobId:job.id,error:job.error});}
