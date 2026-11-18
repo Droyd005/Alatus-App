@@ -1,6 +1,6 @@
 'use strict';
 const $=id=>document.getElementById(id);
-let imageId=null,groups=[],requestId=crypto.randomUUID(),mode='simulacao',isBusy=false,ocrSeq=0,customCaption=false,activeJobId=null,activeBatchId=null,profile={company:'',phone:'',configured:false};
+let imageId=null,groups=[],requestId=crypto.randomUUID(),mode='simulacao',isBusy=false,ocrSeq=0,customCaption=false,activeJobId=null,activeBatchId=null,profile={company:'',phone:'',configured:false},cachedOutbox=[];
 function message(el,text,kind=''){const target=$(el);target.textContent=text;target.className=`${el==='ocrStatus'?'notice':'toast'} ${kind}`;}
 async function api(endpoint,options={}){
  const res=await fetch(endpoint,{credentials:'same-origin',...options,headers:{...(options.body?{'Content-Type':'application/json','X-Alatus-Request':'1'}:{}),...(options.headers||{})}});
@@ -108,12 +108,29 @@ async function startOutbox(){
   await loadOutbox();
  }catch(e){message('outboxStatus',e.message,'bad');await loadOutbox();}
 }
+async function repeatOutbox(){
+ if(isBusy||activeBatchId||activeJobId)return;
+ const items=cachedOutbox;
+ if(!items.length||items.some(x=>!['simulado','submetido'].includes(x.status))){
+  message('outboxStatus','Finalize ou revise as cargas pendentes antes de repetir a fila completa.','warning');return;
+ }
+ const total=items.reduce((n,item)=>n+item.groupIds.length,0);
+ if(!confirm(`Reenviar ${items.length} arte(s) para ${total} grupo(s) no total?\n\nEste comando iniciará uma NOVA rodada de publicações. As mensagens já enviadas serão publicadas novamente somente após sua confirmação.`))return;
+ isBusy=true;$('repeatOutbox').disabled=true;
+ try{
+  const data=await post('/api/outbox/start',{repeat:true,confirm:'REPETIR FILA'});
+  message('outboxStatus',`Nova rodada iniciada: ${data.items} carga(s). Os cadastros ficarão salvos para reutilização.`, 'ok');
+  await loadOutbox();
+ }catch(e){message('outboxStatus',e.message,'bad');await loadOutbox();}
+ finally{isBusy=false;await loadOutbox();}
+}
 async function loadOutbox(){
  try{
   const data=await api('/api/outbox');activeBatchId=data.activeBatchId;
   if(data.lastBatchError)message('outboxStatus','Falha do lote: '+data.lastBatchError,'bad');
-  const items=data.items||[],pending=items.filter(i=>i.status==='pendente');
+  const items=data.items||[],pending=items.filter(i=>i.status==='pendente');cachedOutbox=items;
   $('startOutbox').disabled=!!activeBatchId||!!activeJobId||isBusy||!pending.length||!!data.uncertainSendBlock;
+  $('repeatOutbox').disabled=!!activeBatchId||!!activeJobId||isBusy||!items.length||items.some(i=>!['simulado','submetido'].includes(i.status))||!!data.uncertainSendBlock;
   $('addToOutbox').disabled=!!activeBatchId||isBusy;
   $('cancelOutbox').classList.toggle('hidden',!activeBatchId);
   $('clearOutbox').disabled=!!activeBatchId||!items.some(i=>['simulado','submetido','interrompido_pelo_usuario'].includes(i.status));
@@ -122,13 +139,13 @@ async function loadOutbox(){
    $('outboxProgress').textContent=`Lote ativo: ${done} carga(s) iniciada(s), ${progress} grupo(s) processado(s). Você pode interromper os próximos envios.`;}
   const target=$('outboxItems');target.replaceChildren();
   if(!items.length){const empty=document.createElement('p');empty.className='muted';empty.textContent='Nenhuma carga na fila. Importe uma arte e clique em Adicionar esta carga à fila.';target.append(empty);return;}
-  const summary=document.createElement('p');summary.className='muted';summary.textContent=`${pending.length} pendente(s) • ${items.length} carga(s) cadastrada(s)`;target.append(summary);
+  const summary=document.createElement('p');summary.className='muted';summary.textContent=`${pending.length} pendente(s) • ${items.length} carga(s) salvas${items.length&&!pending.length&&items.every(i=>['simulado','submetido'].includes(i.status))?' • Pronta para reenviar':''}`;target.append(summary);
   for(const [index,item] of items.entries()){
    const box=document.createElement('div');box.className='outbox-item';
    const thumb=document.createElement('img');thumb.className='outbox-thumb';thumb.alt='Prévia da carga';thumb.src='/api/image/'+encodeURIComponent(item.imageId);
    const info=document.createElement('div');info.className='outbox-info';
    const title=document.createElement('strong');title.textContent=`${index+1}. ${item.origin} → ${item.destination}`;
-   const details=document.createElement('div');details.className='muted';details.textContent=`${item.vehicle} • ${item.groupIds.length} grupos • ${item.status} • ${item.progress?.done||0}/${item.progress?.total||0}`;
+   const details=document.createElement('div');details.className='muted';const times=Number.isInteger(item.sendCount)?item.sendCount:(['simulado','submetido'].includes(item.status)?1:0);details.textContent=`${item.vehicle} • ${item.groupIds.length} grupos • ${item.status} • ${item.progress?.done||0}/${item.progress?.total||0} • ${times} rodada(s) concluída(s)`;
    const destinations=document.createElement('div');destinations.className='muted';destinations.textContent=(item.groupNames||[]).join(' · ');
    info.append(title,details,destinations);
    if(item.error){const err=document.createElement('div');err.className='bad';err.textContent=item.error;info.append(err);}
@@ -225,9 +242,9 @@ $('cancelSend').addEventListener('click',async()=>{if(!activeJobId)return;try{aw
   }catch(e){message('historyStatus',e.message,'bad');await loadJobs();}
  });
 $('reloadJobs').addEventListener('click',loadJobs);$('send').addEventListener('click',publish);
-$('addToOutbox').addEventListener('click',addToOutbox);$('startOutbox').addEventListener('click',startOutbox);
+$('addToOutbox').addEventListener('click',addToOutbox);$('startOutbox').addEventListener('click',startOutbox);$('repeatOutbox').addEventListener('click',repeatOutbox);
 $('cancelOutbox').addEventListener('click',async()=>{if(!activeBatchId)return;try{await post('/api/outbox/cancel',{batchId:activeBatchId});message('outboxStatus','Parada solicitada. Aguarde o envio atual e confira o histórico.','warning');}catch(e){message('outboxStatus',e.message,'bad');}});
-$('clearOutbox').addEventListener('click',async()=>{try{await post('/api/outbox/clear',{});await loadOutbox();}catch(e){message('outboxStatus',e.message,'bad');}});
+$('clearOutbox').addEventListener('click',async()=>{if(!confirm('Excluir definitivamente os itens finalizados da fila salva? Você precisará cadastrá-los novamente para enviar essas artes.'))return;try{await post('/api/outbox/clear',{});await loadOutbox();}catch(e){message('outboxStatus',e.message,'bad');}});
 (async()=>{try{const res=await api('/api/status');setMode(res.mode);await loadProfile();await Promise.all([updateStatus(),refreshImages(),loadJobs(),loadOutbox()]);await loadGroups();}catch(e){message('sendStatus','Falha ao iniciar: '+e.message,'bad');}})();
 setInterval(updateStatus,4500);
 setInterval(loadJobs,2200);

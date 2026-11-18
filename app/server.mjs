@@ -7,7 +7,7 @@ import {APP_PORT, ROOT, DIR, DATA, setupDirs, loadJson, saveJson, audit, fail, i
 import {recognizeImage} from './src/ocr.mjs';
 import {WhatsAppBridge} from './src/wa.mjs';
 import {processPublicationQueue} from './src/queue.mjs';
-import {enqueueItem, recoverOutbox, batchSnapshot, clearCompleted} from './src/outbox.mjs';
+import {enqueueItem, recoverOutbox, batchSnapshot, clearCompleted, prepareRepeat, REPEATABLE_STATUSES} from './src/outbox.mjs';
 
 const appDir=path.dirname(fileURLToPath(import.meta.url));
 const mode=process.env.ALATUS_MODE==='real'?'real':'simulacao';
@@ -24,7 +24,7 @@ if(recoverOutbox(outbox))saveJson(DATA.outbox,outbox);
 let interruptedJobs=false;
 for(const j of jobs) {if(j.status==='em_andamento'){j.status='revisar_manualmente';j.interruptedAt=new Date().toISOString();interruptedJobs=true;audit('envio_interrompido',{jobId:j.id});}}
 if(interruptedJobs)saveJson(DATA.jobs,jobs);
-let busy=false, lastGroups=[], activeJobId=null, activeBatchId=null, lastBatchError=null, cancelActiveJob=false, uncertainSendBlock=false;
+let busy=false, startingOutbox=false, lastGroups=[], activeJobId=null, activeBatchId=null, lastBatchError=null, cancelActiveJob=false, uncertainSendBlock=false;
 const HEADERS={'X-Content-Type-Options':'nosniff','X-Frame-Options':'DENY','Referrer-Policy':'no-referrer','Cache-Control':'no-store','Content-Security-Policy':"default-src 'self'; img-src 'self' data: blob:; script-src 'self'; style-src 'self' 'unsafe-inline'; connect-src 'self'; object-src 'none'; frame-ancestors 'none'; base-uri 'none'"};
 function json(res,code,data,more={}){res.writeHead(code,{...HEADERS,'Content-Type':'application/json; charset=utf-8',...more});res.end(JSON.stringify(data));}
 function text(res,code,data,mime='text/plain; charset=utf-8'){res.writeHead(code,{...HEADERS,'Content-Type':mime});res.end(data);}
@@ -94,7 +94,7 @@ async function request(req,res){
    if(!String(req.headers['content-type']||'').startsWith('application/json'))throw fail(415,'Envie Content-Type application/json.');
   }
   if(req.method==='GET'&&pathname==='/api/profile')return json(res,200,{profile:getProfile()});
-  if(req.method==='POST'&&pathname==='/api/profile'){if(busy)throw fail(409,'Não altere o perfil enquanto houver envio em andamento.');const b=await body(req,3000);return json(res,200,{profile:persistProfile(b)});}
+  if(req.method==='POST'&&pathname==='/api/profile'){if(busy||startingOutbox)throw fail(409,'Não altere o perfil enquanto houver envio em andamento.');const b=await body(req,3000);return json(res,200,{profile:persistProfile(b)});}
   if(req.method==='GET'&&pathname==='/api/status')return json(res,200,{...bridge.publicStatus(),imageCount:images.length,jobCount:jobs.length,activeJobId,activeBatchId,uncertainSendBlock});
   if(req.method==='GET'&&pathname==='/api/images')return json(res,200,{images:images.slice(-30).reverse().map(({file,...x})=>x)});
   if(req.method==='GET'&&pathname.startsWith('/api/image/')){
@@ -114,16 +114,16 @@ async function request(req,res){
    return json(res,202,{imageId:image.id,ocr:image.ocr});
   }
   if(req.method==='POST'&&pathname==='/api/connect'){
-   if(busy)throw fail(409,'Não reinicie a conexão durante a fila de envio.');
+   if(busy||startingOutbox)throw fail(409,'Não reinicie a conexão durante a fila de envio.');
    const status=await bridge.connect();return json(res,200,status);
   }
   if(req.method==='POST'&&pathname==='/api/reconnect'){
-   if(busy)throw fail(409,'Não reinicie a conexão durante a fila de envio.');
+   if(busy||startingOutbox)throw fail(409,'Não reinicie a conexão durante a fila de envio.');
    const status=await bridge.connect({restart:true});lastGroups=[];
    return json(res,200,status);
   }
   if(req.method==='POST'&&pathname==='/api/session/reset'){
-   if(busy)throw fail(409,'Não redefina a sessão durante a fila de envio.');
+   if(busy||startingOutbox)throw fail(409,'Não redefina a sessão durante a fila de envio.');
    const b=await body(req,2000);
    if(b.confirm!=='REDEFINIR SESSAO')throw fail(422,'Confirmação inválida. Sessão preservada.');
    const status=await bridge.resetSession();lastGroups=[];
@@ -144,7 +144,7 @@ async function request(req,res){
   if(req.method==='GET'&&pathname==='/api/outbox')return json(res,200,{activeBatchId,activeJobId,uncertainSendBlock,items:outbox});
   if(req.method==='GET'&&pathname==='/api/jobs')return json(res,200,{activeJobId,uncertainSendBlock,jobs:jobs.slice(-30).reverse().map(j=>({id:j.id,createdAt:j.createdAt,mode:j.mode,origin:j.origin,destination:j.destination,status:j.status,progress:j.progress,results:j.results}))});
   if(req.method==='POST'&&pathname==='/api/jobs/clear'){
-   if(busy||activeJobId||activeBatchId)throw fail(409,'Aguarde a conclusão dos envios antes de limpar o histórico.');
+   if(busy||startingOutbox||activeJobId||activeBatchId)throw fail(409,'Aguarde a conclusão dos envios antes de limpar o histórico.');
    await body(req,2000);
    const completed=new Set(['simulado','submetido','interrompido_pelo_usuario']);
    const finished=jobs.filter(j=>completed.has(j.status));
@@ -156,7 +156,7 @@ async function request(req,res){
    return json(res,200,{removed:finished.length,preserved:keep.length});
   }
   if(req.method==='POST'&&pathname==='/api/outbox/add'){
-   if(busy)throw fail(409,'Aguarde o término do envio para adicionar itens.');
+   if(busy||startingOutbox)throw fail(409,'Aguarde o término do envio para adicionar itens.');
    const b=await body(req,24_000);const record=validateSend(b,images,lastGroups);
    if(clearedRequestIds.has(record.requestId))throw fail(409,'Esta tentativa já foi publicada anteriormente.');
    const item=enqueueItem(record,outbox,lastGroups,jobs);updateOutbox();
@@ -164,14 +164,14 @@ async function request(req,res){
    return json(res,201,{item});
   }
   if(req.method==='POST'&&pathname==='/api/outbox/remove'){
-   if(busy)throw fail(409,'Não altere a fila enquanto estiver enviando.');
+   if(busy||startingOutbox)throw fail(409,'Não altere a fila enquanto estiver enviando.');
    const b=await body(req,2000);const i=outbox.findIndex(x=>x.id===b.id);
    if(i<0)throw fail(404,'Item da fila não encontrado.');
    const removed=outbox.splice(i,1)[0];updateOutbox();audit('carga_removida_da_fila',{id:removed.id,status:removed.status});
    return json(res,200,{removedId:removed.id});
   }
   if(req.method==='POST'&&pathname==='/api/outbox/clear'){
-   if(busy)throw fail(409,'Não limpe a fila durante envios.');
+   if(busy||startingOutbox)throw fail(409,'Não limpe a fila durante envios.');
    const count=clearCompleted(outbox);updateOutbox();return json(res,200,{removed:count});
   }
   if(req.method==='POST'&&pathname==='/api/outbox/cancel'){
@@ -181,17 +181,36 @@ async function request(req,res){
    return json(res,202,{ok:true,message:'Interrupção solicitada. O envio em andamento pode ser concluído.'});
   }
   if(req.method==='POST'&&pathname==='/api/outbox/start'){
-   if(busy)throw fail(409,'Já existe um envio ativo.');
-   if(uncertainSendBlock)throw fail(409,'Envio anterior com resultado incerto. Confira no WhatsApp e reinicie antes de enviar outro lote.');
-   const ids=batchSnapshot(outbox);
-   if(!ids.length)throw fail(422,'Adicione ao menos uma carga pendente à fila.');
-   if(mode==='real'&&!bridge.publicStatus().connected)throw fail(409,'Conecte o WhatsApp antes de enviar.');
-   busy=true;cancelActiveJob=false;lastBatchError=null;activeBatchId=randomUUID();
+   if(busy||startingOutbox)throw fail(409,'Já existe um envio ativo.');
+   if(uncertainSendBlock)throw fail(409,'Envio anterior com resultado incerto. Confira no WhatsApp e reinicie antes de outro lote.');
+   startingOutbox=true;
+   let ids, knownGroups, repeat=false;
+   try{
+    const request=await body(req,2000);
+    repeat=request.repeat===true;
+    if(request.repeat!==undefined && !repeat)throw fail(422,'Solicitação de repetição inválida.');
+    if(repeat && request.confirm!=='REPETIR FILA')throw fail(422,'Confirme o reenvio da fila completa.');
+    if(mode==='real'&&!bridge.publicStatus().connected)throw fail(409,'Conecte o WhatsApp antes de enviar.');
+    if(repeat){
+     if(!outbox.length||outbox.some(item=>!REPEATABLE_STATUSES.has(item.status)))
+      throw fail(422,'A fila contém cargas pendentes, interrompidas ou a revisar. Conclua ou revise antes de repetir todas.');
+     // Validar toda a rodada antes de alterar o estado de qualquer imagem.
+     for(const item of outbox){const image=imageRecord(item.imageId);if(!fs.existsSync(path.join(DIR.images,image.file)))throw fail(409,'Uma imagem salva não está mais disponível. Reimporte antes de reenviar.');}
+     knownGroups=await bridge.groups();
+     ids=prepareRepeat(outbox,knownGroups);
+     updateOutbox();
+     audit('lote_reutilizado',{items:ids.length,groups:outbox.reduce((n,x)=>n+x.groupIds.length,0)});
+    }else{
+     ids=batchSnapshot(outbox);
+     if(!ids.length)throw fail(422,'Não há cargas pendentes. Use Reenviar fila salva para uma nova rodada.');
+    }
+    busy=true;cancelActiveJob=false;lastBatchError=null;activeBatchId=randomUUID();
+   }finally{startingOutbox=false;}
    const batchId=activeBatchId;
-   audit('lote_iniciado',{batchId,items:ids.length});
+   audit('lote_iniciado',{batchId,items:ids.length,repeat});
    void (async()=>{
     try{
-     const knownGroups=await bridge.groups();
+     knownGroups=knownGroups||await bridge.groups();
      const groupNames=new Map(knownGroups.map(g=>[g.id,g.name]));
      for(const id of ids){
       if(cancelActiveJob||serverShuttingDown)break;
@@ -214,6 +233,7 @@ async function request(req,res){
         afterGroup:async(j,result)=>{item.progress={...j.progress};item.results=[...j.results];updateJobs();updateOutbox();audit('envio_lote_grupo',{batchId,itemId:item.id,groupId:result.groupId,status:result.status});}
        });
        item.status=job.status;item.results=[...job.results];item.progress={...job.progress};item.finishedAt=job.finishedAt;
+       if(REPEATABLE_STATUSES.has(job.status)){item.sendCount=(Number.isInteger(item.sendCount)?item.sendCount:0)+1;item.lastSentAt=job.finishedAt;}
        if(outcome.timedOut){uncertainSendBlock=true;audit('lote_timeout_incertissimo',{batchId,itemId:item.id});}
        if(outcome.uncertain||job.status==='revisar_manualmente'){
         updateJobs();updateOutbox();break;
@@ -233,10 +253,10 @@ async function request(req,res){
    return json(res,202,{ok:true,jobId:activeJobId,message:'Cancelamento solicitado. A mensagem em curso pode ainda ser submetida.'});
   }
   if(req.method==='POST'&&pathname==='/api/send'){
-   if(busy)throw fail(409,'Já existe uma fila de envio em andamento.');
+   if(busy||startingOutbox)throw fail(409,'Já existe uma fila de envio em andamento.');
    if(uncertainSendBlock)throw fail(409,'Bloqueado após timeout incerto. Verifique no WhatsApp e reinicie o servidor antes de uma nova publicação.');
    const b=await body(req,24_000);
-   if(busy)throw fail(409,'Já existe uma fila de envio em andamento.');
+   if(busy||startingOutbox)throw fail(409,'Já existe uma fila de envio em andamento.');
    const record=validateSend(b,images,lastGroups);
    const existing=jobs.find(j=>j.requestId===record.requestId);
    if(clearedRequestIds.has(record.requestId))throw fail(409,'Esta tentativa já foi publicada anteriormente. Confira o WhatsApp antes de repetir.');

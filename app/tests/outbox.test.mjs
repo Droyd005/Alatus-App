@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {enqueueItem, recoverOutbox, batchSnapshot, clearCompleted} from '../src/outbox.mjs';
+import {enqueueItem, recoverOutbox, batchSnapshot, clearCompleted, prepareRepeat} from '../src/outbox.mjs';
 import {randomUUID} from 'node:crypto';
 const groups=[{id:'a@g.us',name:'Grupo A'},{id:'b@g.us',name:'Grupo B'}];
 const makeRecord=(i,ids=['a@g.us'])=>({requestId:randomUUID(),image:{id:`arte-${i}`},origin:`Origem ${i}`,destination:`Destino ${i}`,vehicle:'Carreta refrigerada',caption:'Valores a negociar',groupIds:ids});
@@ -30,4 +30,27 @@ test('limpar finalizados mantém pendentes e resultados incertos',()=>{
  items[0].status='submetido';items[1].status='simulado';items[2].status='revisar_manualmente';
  assert.equal(clearCompleted(items),2);assert.equal(items.length,3);
  assert.deepEqual(items.map(x=>x.status),['revisar_manualmente','pendente','pendente']);
+});
+
+test('reutilizar 12 cargas concluídas mantém imagens, textos e grupos com IDs novos',()=>{
+ const items=[];for(let i=0;i<12;i++)enqueueItem(makeRecord(i,i%2?['b@g.us']:['a@g.us','b@g.us']),items,groups);
+ const oldIds=items.map(i=>i.requestId);
+ for(const item of items){item.status='submetido';item.finishedAt='2026-11-17T10:00:00.000Z';}
+ const result=prepareRepeat(items,groups);
+ assert.deepEqual(result,items.map(i=>i.id));
+ for(let i=0;i<12;i++){
+  assert.equal(items[i].status,'pendente');assert.equal(items[i].sendCount,1);
+  assert.notEqual(items[i].requestId,oldIds[i]);assert.equal(items[i].imageId,`arte-${i}`);
+  assert.equal(items[i].origin,`Origem ${i}`);assert.equal(items[i].progress.done,0);
+  assert.deepEqual(items[i].groupIds,i%2?['b@g.us']:['a@g.us','b@g.us']);
+  assert.equal(items[i].lastSentAt,'2026-11-17T10:00:00.000Z');
+ }
+});
+test('repetição bloqueia fila pendente, envio incerto e grupo de outra conta sem mudar dados',()=>{
+ const items=[];enqueueItem(makeRecord(1),items,groups);
+ assert.throws(()=>prepareRepeat(items,groups),{status:422});
+ items[0].status='revisar_manualmente';assert.throws(()=>prepareRepeat(items,groups),{status:422});
+ items[0].status='submetido';const before=JSON.stringify(items);
+ assert.throws(()=>prepareRepeat(items,[{id:'outro@g.us',name:'Outra conta'}]),{status:409});
+ assert.equal(JSON.stringify(items),before);
 });

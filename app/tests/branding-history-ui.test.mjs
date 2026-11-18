@@ -18,5 +18,5 @@ test('limpar histórico exige confirmação e usa rota restrita para finalizados
  assert.match(js,/confirm\('Excluir o histórico/);
  assert.match(js,/\/api\/jobs\/clear/);
  assert.match(server,/pathname==='\/api\/jobs\/clear'/);
- assert.match(server,/if\(busy\|\|activeJobId\|\|activeBatchId\)/);
+ assert.match(server,/if\(busy\|\|startingOutbox\|\|activeJobId\|\|activeBatchId\)/);
 });
