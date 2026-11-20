@@ -9,6 +9,7 @@ import {WhatsAppBridge} from './src/wa.mjs';
 import {processPublicationQueue} from './src/queue.mjs';
 import {enqueueItem, recoverOutbox, batchSnapshot, clearCompleted, prepareRepeat, REPEATABLE_STATUSES} from './src/outbox.mjs';
 import {newSchedule,changeSchedule,scheduleDue,reschedule,pauseSchedule} from './src/scheduler.mjs';
+import {markAttemptAccepted,markConfirmedFailure,pendingRecovery,queueDefinitelyUnsent} from './src/recovery.mjs';
 
 const appDir=path.dirname(fileURLToPath(import.meta.url));
 const mode=process.env.ALATUS_MODE==='real'?'real':'simulacao';
@@ -31,7 +32,7 @@ let autoSchedule=newSchedule(loadJson(scheduleFile,{}));
 function saveSchedule(){saveJson(scheduleFile,autoSchedule);}
 // Reabrir o aplicativo nunca dispara uma rodada pendente de horario anterior.
 if(autoSchedule.enabled)saveSchedule();
-let scheduleTickActive=false,autoTimer=null;
+let scheduleTickActive=false,autoTimer=null,previousAutomaticWasRecovery=false;
 // Atualizacoes de ACK chegam em rajadas. Persistir uma unica vez por janela evita travar o envio.
 let deliveryWriteTimer=null;
 function persistDeliveryUpdates(urgent=false){
@@ -50,10 +51,8 @@ function applyReceipt(job,result,receipt){
  const begin=Date.parse(result.submittedAt||job.createdAt);
  if(Number.isFinite(begin))result.confirmationDelayMs=Math.max(0,Date.parse(receipt.deliveryAt)-begin);
  if(receipt.deliveryStatus==='falhou'){
-  job.deliveryFailure=true;uncertainSendBlock=true;
-  // Um retorno expresso de erro deve interromper novos grupos e proibir repeticao programada.
-  cancelActiveJob=true;
-  if(autoSchedule.enabled){autoSchedule=pauseSchedule(autoSchedule,'Pausado: o WhatsApp reportou falha de envio. Confira o historico.');saveSchedule();}
+  // Falha EXPLICITAMENTE confirmada pode ser recuperada, mas nunca duplicar um envio incerto.
+  job.deliveryFailure=true;
  }
  return true;
 }
@@ -76,9 +75,12 @@ bridge.onDeliveryUpdate=receipt=>{
   if(item){
    const row=item.results?.find(x=>x.groupId===receipt.groupId&&x.messageId===receipt.messageId);
    if(row)Object.assign(row,{deliveryStatus:result.deliveryStatus,deliveryCode:result.deliveryCode,deliveryAt:result.deliveryAt,confirmationDelayMs:result.confirmationDelayMs});
-   if(job.deliveryFailure){item.status='revisar_manualmente';item.error='O WhatsApp reportou falha de envio. Confira os grupos antes de repetir.';}
+   if(receipt.deliveryStatus==='falhou' && markConfirmedFailure(item,receipt.groupId,receipt.messageId)){
+    item.error='Falha confirmada: tentativa seletiva agendada para o proximo horario.';
+    audit('recuperacao_pendente',{itemId:item.id,groupId:receipt.groupId});
+   }
   }
-  if(job.deliveryFailure&&job.status!=='em_andamento')job.status='revisar_manualmente';
+  // Conservar a tentativa submetida no historico; ela permanece registrada como falha no ACK.
   audit('whatsapp_confirmacao',{jobId:job.id,groupId:receipt.groupId,status:receipt.deliveryStatus,delayMs:result.confirmationDelayMs});
  }
  if(changed)persistDeliveryUpdates(receipt.deliveryStatus==='falhou');
@@ -121,21 +123,28 @@ function queueOcr(id,force=false){
  pendingOcr.set(id,promise);ocrQueue=promise;
 }
 // Inicia uma rodada manual ou programada usando a mesma protecao contra duplicacao.
-async function startOutboxBatch({repeat=false,automated=false}={}){
+async function startOutboxBatch({repeat=false,automated=false,recovery=false}={}){
  if(busy||startingOutbox)throw fail(409,'Ja existe um envio ativo.');
- if(uncertainSendBlock)throw fail(409,'Envio anterior com resultado incerto. Confira no WhatsApp antes de outra rodada.');
+ if(uncertainSendBlock&&!automated)throw fail(409,'Envio anterior com resultado incerto. Confira no WhatsApp antes de outra rodada.');
  startingOutbox=true;
  let ids,knownGroups;
  try{
   if(mode==='real'&&!bridge.publicStatus().connected)throw fail(409,'Conecte o WhatsApp antes de enviar.');
-  if(repeat){
-   if(!outbox.length||outbox.some(item=>!REPEATABLE_STATUSES.has(item.status)))
-    throw fail(422,'Fila com cargas pendentes ou incertas. Conclua ou revise antes de repetir.');
-   for(const item of outbox){const img=imageRecord(item.imageId);if(!fs.existsSync(path.join(DIR.images,img.file)))throw fail(409,'Imagem salva nao encontrada.');}
+  if(recovery){
    knownGroups=await bridge.groups();
-   ids=prepareRepeat(outbox,knownGroups);
+   ids=pendingRecovery(outbox).map(item=>item.id);
+   if(!ids.length)throw fail(422,'Nao ha falhas confirmadas pendentes de recuperacao.');
+   const allowed=new Set(knownGroups.map(g=>g.id));
+   if(ids.some(id=>outbox.find(x=>x.id===id).retryGroupIds.some(g=>!allowed.has(g))))throw fail(409,'Grupo de recuperacao nao disponivel; verificar conexao.');
+  }else if(repeat){
+   const candidates=automated?outbox.filter(item=>REPEATABLE_STATUSES.has(item.status)):outbox;
+   if(!candidates.length||(!automated&&outbox.some(item=>!REPEATABLE_STATUSES.has(item.status))))
+    throw fail(422,'Nenhuma carga confirmada disponivel para repeticao segura.');
+   for(const item of candidates){const img=imageRecord(item.imageId);if(!fs.existsSync(path.join(DIR.images,img.file)))throw fail(409,'Imagem salva nao encontrada.');}
+   knownGroups=await bridge.groups();
+   ids=prepareRepeat(candidates,knownGroups);
    updateOutbox();
-   audit('lote_reutilizado',{items:ids.length,groups:outbox.reduce((n,x)=>n+x.groupIds.length,0),automated});
+   audit('lote_reutilizado',{items:ids.length,groups:candidates.reduce((n,x)=>n+x.groupIds.length,0),automated});
   }else{
    ids=batchSnapshot(outbox);
    if(!ids.length)throw fail(422,'Nao ha cargas pendentes. Use Reenviar fila salva.');
@@ -143,7 +152,7 @@ async function startOutboxBatch({repeat=false,automated=false}={}){
   busy=true;cancelActiveJob=false;lastBatchError=null;activeBatchId=randomUUID();
  }finally{startingOutbox=false;}
  const batchId=activeBatchId;
- audit('lote_iniciado',{batchId,items:ids.length,repeat,automated});
+ audit('lote_iniciado',{batchId,items:ids.length,repeat,automated,recovery});
  void (async()=>{
   try{
    knownGroups=knownGroups||await bridge.groups();
@@ -151,27 +160,40 @@ async function startOutboxBatch({repeat=false,automated=false}={}){
    for(const id of ids){
     if(cancelActiveJob||serverShuttingDown)break;
     const item=outbox.find(x=>x.id===id);
-    if(!item||item.status!=='pendente')continue;
-    if(item.groupIds.some(groupId=>!groupNames.has(groupId))){
+    if(!item||(recovery?!REPEATABLE_STATUSES.has(item.status):item.status!=='pendente'))continue;
+    const targetGroupIds=recovery?[...(item.retryGroupIds||[])]:item.groupIds;
+    if(!targetGroupIds.length)continue;
+    if(targetGroupIds.some(groupId=>!groupNames.has(groupId))){
      item.status='revisar_manualmente';item.error='Grupo indisponivel. Atualize os destinatarios.';
      item.finishedAt=new Date().toISOString();updateOutbox();break;
     }
     const image=imageRecord(item.imageId);
     item.status='em_andamento';item.startedAt=new Date().toISOString();updateOutbox();
     const job={id:randomUUID(),requestId:item.requestId,mode,status:'em_andamento',createdAt:new Date().toISOString(),
-     origin:item.origin,destination:item.destination,vehicle:item.vehicle,weight:item.weight||'',imageId:image.id,groupIds:item.groupIds,
+     origin:item.origin,destination:item.destination,vehicle:item.vehicle,weight:item.weight||'',imageId:image.id,groupIds:targetGroupIds,
      progress:{done:0,total:item.groupIds.length},results:[]};
     activeJobId=job.id;item.jobId=job.id;addJobs(job);
-    audit('lote_carga_iniciada',{batchId,itemId:item.id,jobId:job.id,groupCount:item.groupIds.length,automated});
+    audit('lote_carga_iniciada',{batchId,itemId:item.id,jobId:job.id,groupCount:targetGroupIds.length,automated,recovery});
     try{
-     const outcome=await processPublicationQueue({job,record:{...item,imagePath:path.join(DIR.images,image.file)},bridge,
+     const outcome=await processPublicationQueue({job,record:{...item,groupIds:targetGroupIds,imagePath:path.join(DIR.images,image.file)},bridge,
       groupNames,isCancelRequested:()=>cancelActiveJob||serverShuttingDown,
-      afterGroup:async(j,result)=>{reconcileJobReceipts(j);item.progress={...j.progress};item.results=[...j.results];updateJobs();updateOutbox();audit('envio_lote_grupo',{batchId,itemId:item.id,groupId:result.groupId,status:result.status,elapsedMs:result.elapsedMs});}
+      afterGroup:async(j,result)=>{
+       reconcileJobReceipts(j);
+       if(result.status==='submetido'&&result.messageId){
+        markAttemptAccepted(item,result.groupId,result.messageId,result.deliveryStatus);
+       }else if(result.status==='nao_enviado')queueDefinitelyUnsent(item,[result.groupId]);
+       item.progress={...j.progress};item.results=[...j.results];updateJobs();updateOutbox();
+       audit('envio_lote_grupo',{batchId,itemId:item.id,groupId:result.groupId,status:result.status,elapsedMs:result.elapsedMs,recovery});
+      }
      });
-     if(job.deliveryFailure){job.status='revisar_manualmente';outcome.uncertain=true;}
-     item.status=job.status;item.results=[...job.results];item.progress={...job.progress};item.finishedAt=job.finishedAt;
+     item.status=outcome.notSubmitted&&!outcome.uncertain?'submetido':job.status;item.results=[...job.results];item.progress={...job.progress};item.finishedAt=job.finishedAt;
+     if(outcome.notSubmitted&&!outcome.uncertain){queueDefinitelyUnsent(item,job.unsentGroupIds||[]);item.error='Grupos sem envio por desconexao; recuperacao agendada.';}
      item.unsentGroupIds=job.unsentGroupIds||[];
-     if(REPEATABLE_STATUSES.has(job.status)){item.sendCount=(Number.isInteger(item.sendCount)?item.sendCount:0)+1;item.lastSentAt=job.finishedAt;}
+     if(REPEATABLE_STATUSES.has(job.status)){
+      if(recovery)item.recoveryCount=(item.recoveryCount||0)+1;
+      else{item.sendCount=(Number.isInteger(item.sendCount)?item.sendCount:0)+1;item.lastSentAt=job.finishedAt;}
+     }
+     if(!item.retryGroupIds?.length && (item.error?.startsWith('Falha confirmada:')||item.error?.startsWith('Grupos sem envio por desconexao')))delete item.error;
      if(outcome.timedOut){uncertainSendBlock=true;audit('lote_timeout_incertissimo',{batchId,itemId:item.id});}
      if(outcome.uncertain||job.status==='revisar_manualmente'){updateJobs();updateOutbox();break;}
     }catch(e){job.status='revisar_manualmente';item.status='revisar_manualmente';item.error=String(e.message||e).slice(0,300);job.error=item.error;break;}
@@ -183,9 +205,15 @@ async function startOutboxBatch({repeat=false,automated=false}={}){
    audit('lote_finalizado',{batchId,cancelled:wasCancelled,automated});
    busy=false;activeJobId=null;activeBatchId=null;cancelActiveJob=false;updateOutbox();
    if(automated){
-    if(wasCancelled||lastBatchError||outbox.some(item=>!REPEATABLE_STATUSES.has(item.status))){
-     autoSchedule=pauseSchedule(autoSchedule,'Agendamento pausado: rodada cancelada ou resultado a revisar. Confira o historico.');
-    }else if(autoSchedule.enabled){autoSchedule.lastResult='Ultima rodada concluida sem resultados incertos.';}
+    if(wasCancelled){autoSchedule=pauseSchedule(autoSchedule,'Desativado pelo operador.');}
+    else if(autoSchedule.enabled){
+     autoSchedule.lastResult=lastBatchError
+      ?'Erro temporario; nova verificacao no proximo horario: '+lastBatchError
+      :outbox.some(item=>item.status==='revisar_manualmente')
+      ?'Programacao ativa. Itens com resultado incerto exigem revisao e nao serao repetidos.'
+      :recovery?'Reenvio seletivo concluido. Proxima rodada agendada.'
+      :'Rodada concluida. Proxima rodada agendada.';
+    }
     saveSchedule();
    }
   }
@@ -197,16 +225,26 @@ async function autoScheduleTick(){
  if(scheduleTickActive||serverShuttingDown||!scheduleDue(autoSchedule))return;
  scheduleTickActive=true;
  try{
-  // Reservar o proximo horario ANTES de iniciar, impedindo clique/timer duplicado.
+  // Horario vencido durante envio espera o lote terminar; executa no proximo tick, nao perde a rodada.
+  if(busy||startingOutbox||activeBatchId){autoSchedule.lastResult='Aguardando rodada ativa terminar; o proximo disparo continuara na sequencia.';return;}
   autoSchedule=reschedule(autoSchedule,Date.now(),'Verificando fila programada...');saveSchedule();
-  if(busy||startingOutbox||activeBatchId){autoSchedule.lastResult='Horario ignorado: ainda havia uma rodada em andamento.';saveSchedule();return;}
-  if(mode==='real'&&!bridge.publicStatus().connected){autoSchedule=pauseSchedule(autoSchedule,'Pausado: WhatsApp desconectado. Ative novamente depois de conectar.');saveSchedule();return;}
-  if(!outbox.length||outbox.some(x=>!['pendente',...REPEATABLE_STATUSES].includes(x.status))){autoSchedule=pauseSchedule(autoSchedule,'Pausado: fila vazia ou itens a revisar.');saveSchedule();return;}
-  const allPending=outbox.every(x=>x.status==='pendente'),allSent=outbox.every(x=>REPEATABLE_STATUSES.has(x.status));
-  if(!allPending&&!allSent){autoSchedule=pauseSchedule(autoSchedule,'Pausado: ha cargas pendentes misturadas com finalizadas.');saveSchedule();return;}
-  const data=await startOutboxBatch({repeat:allSent,automated:true});
-  autoSchedule.lastResult=`Rodada automatica iniciada: ${data.items} carga(s).`;saveSchedule();
- }catch(e){autoSchedule=pauseSchedule(autoSchedule,'Pausado apos erro: '+String(e.message||e).slice(0,210));saveSchedule();audit('agendamento_erro',{error:autoSchedule.lastResult});}
+  if(mode==='real'&&!bridge.publicStatus().connected){autoSchedule.lastResult='Aguardando reconexao do WhatsApp. A programacao continua ativa.';saveSchedule();return;}
+  if(!outbox.length){autoSchedule.lastResult='Fila vazia; aguardando cargas.';saveSchedule();return;}
+  const recoverable=pendingRecovery(outbox);
+  const pending=outbox.some(x=>x.status==='pendente');
+  const repeatable=outbox.some(x=>REPEATABLE_STATUSES.has(x.status));
+  if(recoverable.length&&!previousAutomaticWasRecovery){
+   const data=await startOutboxBatch({recovery:true,automated:true});
+   previousAutomaticWasRecovery=true;
+   autoSchedule.lastResult=`Reenvio seletivo iniciado: ${data.items} carga(s) com falha confirmada.`;saveSchedule();return;
+  }
+  previousAutomaticWasRecovery=false;
+  if(!pending&&!repeatable){
+   autoSchedule.lastResult='Nenhuma carga segura para disparar. Itens incertos permanecem para revisao; agendamento ligado.';saveSchedule();return;
+  }
+  const data=await startOutboxBatch({repeat:!pending,automated:true});
+  autoSchedule.lastResult=`Rodada automatica iniciada: ${data.items} carga(s). Itens incertos serao ignorados.`;saveSchedule();
+ }catch(e){autoSchedule.lastResult='Erro temporario; nova tentativa no proximo horario: '+String(e.message||e).slice(0,180);saveSchedule();audit('agendamento_erro',{error:autoSchedule.lastResult});}
  finally{scheduleTickActive=false;}
 }
 

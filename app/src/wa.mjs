@@ -195,8 +195,8 @@ export class WhatsAppBridge {
  getDeliveryStatus(groupId,messageId){return this.deliveryTracker.get(groupId,messageId);}
   async send(groupId,imagePath,caption) {
   if(this.mode==='simulacao'){await delay(50);return {simulated:true,messageId:`sim-${Date.now()}`};}
-  if(this.status!=='conectado'||!this.socket)throw new Error('WhatsApp desconectado antes de enviar.');
-  if(!this.lastGroups.some(g=>g.id===groupId))throw new Error('Grupo não consta na lista verificada pelo WhatsApp.');
+  if(this.status!=='conectado'||!this.socket)throw Object.assign(new Error('WhatsApp desconectado antes de enviar.'),{notSubmitted:true});
+  if(!this.lastGroups.some(g=>g.id===groupId))throw Object.assign(new Error('Grupo não consta na lista verificada pelo WhatsApp.'),{notSubmitted:true});
   const image=Buffer.isBuffer(imagePath)?imagePath:{url:imagePath};
   // Baileys: imagem pura (sem propriedade caption) quando usuário desativa a legenda.
   const message=typeof caption==='string'&&caption.trim()?{image,caption}:{image};

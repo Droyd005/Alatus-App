@@ -51,7 +51,7 @@ body::before{content:"";position:fixed;inset:0;background:linear-gradient(100deg
  </label>
  <button id="saveSchedule" class="btn secondary" type="button">Salvar programação</button>
  </div>
- <p class="notice" id="scheduleStatus" role="status">Envio automático desligado.</p><p class="data-note">Informe qualquer quantidade positiva de minutos inteiros. Rodadas não se sobrepõem; falhas de entrega pausam o agendamento. O WhatsApp pode impor suas próprias restrições.</p>
+ <p class="notice" id="scheduleStatus" role="status">Envio automático desligado.</p><p class="data-note">Informe qualquer quantidade positiva de minutos inteiros. O agendamento continua ativo diante de falhas confirmadas, com reenvio apenas aos grupos afetados. Resultados incertos exigem revisão para evitar duplicações. O WhatsApp pode impor suas próprias restrições.</p>
  </div>
  <div class="btn-row" style="margin-top:14px"><button id="clearOutbox" type="button" class="btn negative">Excluir itens finalizados</button></div>
 <p class="data-note">A fila, as imagens, as legendas e os grupos ficam salvos para novos envios. Rodadas manuais exigem confirmação; rodadas automáticas precisam de ativação explícita e recebem histórico separado. Uma falha incerta impede repetição automática. Após reiniciar, nenhuma rodada é recuperada ou disparada imediatamente; a próxima segue o intervalo salvo.</p></section>
