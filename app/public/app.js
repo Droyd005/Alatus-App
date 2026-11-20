@@ -163,6 +163,33 @@ async function loadOutbox(){
   }
  }catch(e){message('outboxStatus','Não foi possível consultar a fila: '+e.message,'bad');}
 }
+let scheduleLoaded=false;
+async function loadSchedule(force=false){
+ try{
+  const {schedule}=await api('/api/schedule');
+  if(!scheduleLoaded||force){$('scheduleEnabled').checked=!!schedule.enabled;$('scheduleMinutes').value=schedule.intervalMinutes||20;scheduleLoaded=true;}
+  const next=schedule.enabled&&schedule.nextRunAt?' Próximo horário: '+new Date(schedule.nextRunAt).toLocaleString('pt-BR')+'.':'';
+  message('scheduleStatus',(schedule.enabled?'Agendamento ligado. ':'Agendamento desligado. ')+(schedule.lastResult||'')+next,schedule.enabled?'ok':'');
+ }catch(e){message('scheduleStatus','Erro ao ler programação: '+e.message,'bad');}
+}
+async function saveSchedule(){
+ const enabled=$('scheduleEnabled').checked;
+ const intervalMinutes=Number($('scheduleMinutes').value);
+ if(!Number.isInteger(intervalMinutes)||intervalMinutes<20||intervalMinutes>1440){message('scheduleStatus','Escolha de 20 a 1440 minutos.','bad');return;}
+ if(enabled){
+  const total=cachedOutbox.reduce((n,item)=>n+(item.groupIds?.length||0),0);
+  if(!cachedOutbox.length){message('scheduleStatus','Cadastre a fila antes de ativar o envio automático.','bad');return;}
+  if(!confirm(`Ativar reenvio automático a cada ${intervalMinutes} minutos?\n\nA fila contém ${cachedOutbox.length} artes e ${total} destinatários por rodada. Os grupos devem ter autorizado essas mensagens. O envio começa apenas no próximo horário, enquanto o aplicativo estiver aberto.`))return;
+ }
+ $('saveSchedule').disabled=true;
+ try{
+  const {schedule}=await post('/api/schedule',{enabled,intervalMinutes,confirm:enabled?'ATIVAR AUTOMATICO':undefined});
+  $('scheduleEnabled').checked=schedule.enabled;$('scheduleMinutes').value=schedule.intervalMinutes;
+  await loadSchedule(true);
+ }catch(e){message('scheduleStatus',e.message,'bad');}
+ finally{$('saveSchedule').disabled=false;}
+}
+
 function updateSelectedCount(){const selected=selectedGroups().length,total=groups.length;
  $('selectedCount').textContent=`${selected} de ${total} grupo(s) selecionado(s)`;
  $('selectAll').disabled=!total||selected===total;
@@ -193,7 +220,7 @@ async function loadJobs(){try{const data=await api('/api/jobs');
  $('cancelSend').classList.toggle('hidden',!activeJobId);
  if(activeJobId){const job=data.jobs.find(j=>j.id===activeJobId);
   $('queueProgress').classList.remove('hidden');
-  $('queueProgress').textContent=`Fila em execução: ${job?.progress?.done??0} de ${job?.progress?.total??'?'} grupos processados. Envio individual sem pausa fixa entre grupos. Ao fechar o aplicativo, os próximos envios serão interrompidos.`;
+  $('queueProgress').textContent=`Fila em execução: ${job?.progress?.done??0} de ${job?.progress?.total??'?'} grupos processados. Envio em até 3 grupos em paralelo, sem repetição automática de erros. Ao fechar o aplicativo, os próximos envios serão interrompidos.`;
  }else{
   $('queueProgress').classList.add('hidden');
   if(data.uncertainSendBlock)message('sendStatus','Envio bloqueado após timeout incerto. Confira o WhatsApp e reinicie o servidor.','bad');
@@ -248,10 +275,13 @@ $('cancelSend').addEventListener('click',async()=>{if(!activeJobId)return;try{aw
   }catch(e){message('historyStatus',e.message,'bad');await loadJobs();}
  });
 $('reloadJobs').addEventListener('click',loadJobs);$('send').addEventListener('click',publish);
+$('saveSchedule').addEventListener('click',saveSchedule);
 $('addToOutbox').addEventListener('click',addToOutbox);$('startOutbox').addEventListener('click',startOutbox);$('repeatOutbox').addEventListener('click',repeatOutbox);
 $('cancelOutbox').addEventListener('click',async()=>{if(!activeBatchId)return;try{await post('/api/outbox/cancel',{batchId:activeBatchId});message('outboxStatus','Parada solicitada. Aguarde o envio atual e confira o histórico.','warning');}catch(e){message('outboxStatus',e.message,'bad');}});
 $('clearOutbox').addEventListener('click',async()=>{if(!confirm('Excluir definitivamente os itens finalizados da fila salva? Você precisará cadastrá-los novamente para enviar essas artes.'))return;try{await post('/api/outbox/clear',{});await loadOutbox();}catch(e){message('outboxStatus',e.message,'bad');}});
-(async()=>{try{const res=await api('/api/status');setMode(res.mode);await loadProfile();await Promise.all([updateStatus(),refreshImages(),loadJobs(),loadOutbox()]);await loadGroups();}catch(e){message('sendStatus','Falha ao iniciar: '+e.message,'bad');}})();
+(async()=>{try{const res=await api('/api/status');setMode(res.mode);await loadProfile();await Promise.all([updateStatus(),refreshImages(),loadJobs(),loadOutbox(),loadSchedule(true)]);await loadGroups();}catch(e){message('sendStatus','Falha ao iniciar: '+e.message,'bad');}})();
 setInterval(updateStatus,4500);
 setInterval(loadJobs,2200);
 setInterval(loadOutbox,2200);
+
+setInterval(()=>{void loadSchedule();},12000);

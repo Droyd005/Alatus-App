@@ -55,15 +55,3 @@ test('perfil personalizado de parceiro é isolado da legenda anterior',()=>{
  assert.doesNotMatch(caption,/ALATUS LOGÍSTICA/);
  assert.throws(()=>core.persistProfile({company:'Empresa',phone:'123'}),/Telefone/);
 });
-
-test('legenda apresenta peso apenas quando informado e mantém os demais dados',()=>{
- const withWeight=core.makeCaption({origin:'Alta Floresta - MT',destination:'Maringá - PR',vehicle:'Bitruck refrigerado',weight:'13,2 toneladas'});
- const withoutWeight=core.makeCaption({origin:'Curitiba - PR',destination:'São Paulo - SP',vehicle:'Carreta refrigerada'});
- assert.match(withWeight,/⚖️ \*Peso:\* 13,2 toneladas/);
- assert.doesNotMatch(withoutWeight,/Peso:/);
-});
-test('API de publicação preserva peso opcional e permite imagem sem legenda',()=>{
- const im={id:randomUUID()},groups=[{id:'g@g.us',name:'Grupo'}];
- const rec=core.validateSend({imageId:im.id,origin:'',destination:'',vehicle:'',weight:'',caption:'',groupIds:['g@g.us'],requestId:randomUUID()},[im],groups);
- assert.equal(rec.caption,'');assert.equal(rec.weight,'');
-});

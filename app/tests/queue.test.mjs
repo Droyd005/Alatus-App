@@ -7,23 +7,23 @@ const fixture=n=>({
  record:{groupIds:Array.from({length:n},(_,i)=>`grupo-${i}@g.us`),imagePath:'arte.png',caption:'Frete disponível'},
  groupNames:new Map(Array.from({length:n},(_,i)=>[`grupo-${i}@g.us`,`Grupo ${i}`]))
 });
-test('envio sequencial para 25 grupos, nunca em paralelo',async()=>{
+test('envio com ate 3 grupos simultaneos, sem duplicacao',async()=>{
  const args=fixture(25);let inFlight=0,max=0,calls=0;
  const bridge={send:async()=>{inFlight++;max=Math.max(max,inFlight);await new Promise(r=>setTimeout(r,1));inFlight--;return {messageId:String(++calls),simulated:false};}};
  const result=await processPublicationQueue({...args,bridge});
- assert.equal(max,1);assert.equal(result.uncertain,false);assert.equal(args.job.status,'submetido');assert.equal(args.job.results.length,25);assert.ok(args.job.results.every(x=>x.elapsedMs>=0));assert.equal(args.job.progress.done,25);
+ assert.ok(max>=2&&max<=3);assert.equal(result.uncertain,false);assert.equal(args.job.status,'submetido');assert.equal(args.job.results.length,25);assert.ok(args.job.results.every(x=>x.elapsedMs>=0));assert.equal(args.job.progress.done,25);
 });
 test('em caso de falha, interrompe o restante e não tenta reenviar',async()=>{
  const args=fixture(22);let calls=0;
  const bridge={send:async()=>{calls++;if(calls===3)throw new Error('queda da conexão');return {messageId:String(calls),simulated:false};}};
  const result=await processPublicationQueue({...args,bridge});
- assert.equal(result.uncertain,true);assert.equal(calls,3);assert.equal(args.job.results.length,3);assert.equal(args.job.status,'revisar_manualmente');
+ assert.equal(result.uncertain,true);assert.ok(calls>=3&&calls<=6);assert.equal(args.job.results.length,calls);assert.equal(new Set(args.job.results.map(x=>x.groupId)).size,calls);assert.equal(args.job.status,'revisar_manualmente');
 });
 test('cancelamento interrompe próximos grupos, não cancela envio em curso',async()=>{
- const args=fixture(24);let calls=0,stop=false;
+ const args=fixture(24);let calls=0,stop=false,completed=0;
  const bridge={send:async()=>{calls++;return {messageId:String(calls),simulated:false};}};
- await processPublicationQueue({...args,bridge,isCancelRequested:()=>stop,afterGroup:()=>{if(calls===2)stop=true;}});
- assert.equal(calls,2);assert.equal(args.job.status,'interrompido_pelo_usuario');
+ await processPublicationQueue({...args,bridge,isCancelRequested:()=>stop,afterGroup:()=>{completed++;if(completed===2)stop=true;}});
+ assert.ok(calls>=2&&calls<=5);assert.equal(args.job.status,'interrompido_pelo_usuario');assert.equal(args.job.unsentGroupIds.length,24-calls);
 });
 test('otimização: carrega imagem apenas uma vez antes dos grupos',async()=>{
  const args=fixture(27);let prepared=0,calls=0;const buffer=Buffer.from('exemplo');

@@ -2,7 +2,6 @@ import {setTimeout as delay} from 'node:timers/promises';
 import fs from 'node:fs';
 import path from 'node:path';
 import {DIR, audit} from './core.mjs';
-import {createMediaUploadCache} from './media-cache.mjs';
 
 // 515 (restartRequired) é normal após ler um QR no Baileys.
 // O pareamento somente termina após abrir um NOVO socket com credenciais persistidas.
@@ -35,12 +34,12 @@ export class WhatsAppBridge {
   this.startPromise=null;this.generation=0;this.lastGroups=[];this.retries=0;
   this.retryTimer=null;this.credentialFlush=Promise.resolve();
   this.lastDisconnectCode=null;this.dependencies=dependencies;
-  this.shuttingDown=false;this.groupMetadata=new Map();this.mediaCache=createMediaUploadCache();
+  this.shuttingDown=false;this.groupMetadata=new Map();
  }
  publicStatus() {return {mode:this.mode,status:this.status,qr:this.qr,qrCreatedAt:this.qrCreatedAt,lastError:this.lastError,connected:this.status==='conectado',connectedNumber:this.status==='conectado'?phoneFromJid(this.socket?.user?.id):null,groupsLoaded:this.lastGroups.length,reconnectAttempt:this.retries,lastDisconnectCode:this.lastDisconnectCode};}
  _clearTimer() {if(this.retryTimer!==null){clearTimeout(this.retryTimer);this.retryTimer=null;}}
  _closeSocket() {
-  const previous=this.socket;this.socket=null;this.mediaCache.clear();
+  const previous=this.socket;this.socket=null;
   if(previous&&typeof previous.end==='function') {
    try { previous.end(new Error('Conexão reiniciada pelo painel')); } catch(e) {audit('socket_fechamento_erro',{message:e.message});}
   }
@@ -72,8 +71,6 @@ export class WhatsAppBridge {
   const generation=++this.generation;
   const socket=makeWASocket({
    auth:state,logger:pinoMod.default({level:'silent'}),markOnlineOnConnect:false,syncFullHistory:false,
-   // Baileys reusa a mídia já enviada para grupos seguintes e rodadas da mesma sessão.
-   mediaCache:this.mediaCache,
    // Evita buscar novamente a lista de participantes a cada mensagem.
    cachedGroupMetadata:async jid=>{
     const cached=this.groupMetadata.get(jid);
@@ -109,7 +106,7 @@ export class WhatsAppBridge {
    this.lastError=null;this.retries=0;this.lastDisconnectCode=null;audit('whatsapp_conectado');
   }
   if(connection==='close'){
-   this.socket=null;this.qr=null;this.qrCreatedAt=null;this.lastGroups=[];this.groupMetadata.clear();this.mediaCache.clear();
+   this.socket=null;this.qr=null;this.qrCreatedAt=null;this.lastGroups=[];this.groupMetadata.clear();
    const code=lastDisconnect?.error?.output?.statusCode??null;
    this.lastDisconnectCode=code;
    const plan=connectionPlan(code,this.retries);
@@ -156,13 +153,9 @@ export class WhatsAppBridge {
  }
  async prepareImage(imagePath){
   if(this.mode==='simulacao')return imagePath;
-  const file=path.resolve(imagePath);
-  if(path.dirname(file)!==path.resolve(DIR.images))throw new Error('Imagem fora da pasta de cargas.');
-  const stat=await fs.promises.stat(file);
-  if(!stat.isFile()||stat.size<16||stat.size>8_000_000)throw new Error('Imagem fora do limite para envio.');
-  // Passar {url:arquivo} em vez de Buffer habilita mediaCache do Baileys.
-  // O arquivo tem UUID único e não é sobrescrito durante novos uploads.
-  return file;
+  const buffer=await fs.promises.readFile(imagePath);
+  if(buffer.length<16||buffer.length>8_000_000)throw new Error('Imagem fora do limite para envio.');
+  return buffer;
  }
  async shutdown(){
   // Não excluir a sessão. Ao reabrir, as credenciais salvas serão reutilizadas.

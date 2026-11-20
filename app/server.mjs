@@ -8,6 +8,7 @@ import {recognizeImage} from './src/ocr.mjs';
 import {WhatsAppBridge} from './src/wa.mjs';
 import {processPublicationQueue} from './src/queue.mjs';
 import {enqueueItem, recoverOutbox, batchSnapshot, clearCompleted, prepareRepeat, REPEATABLE_STATUSES} from './src/outbox.mjs';
+import {newSchedule,changeSchedule,scheduleDue,reschedule,pauseSchedule} from './src/scheduler.mjs';
 
 const appDir=path.dirname(fileURLToPath(import.meta.url));
 const mode=process.env.ALATUS_MODE==='real'?'real':'simulacao';
@@ -25,6 +26,12 @@ let interruptedJobs=false;
 for(const j of jobs) {if(j.status==='em_andamento'){j.status='revisar_manualmente';j.interruptedAt=new Date().toISOString();interruptedJobs=true;audit('envio_interrompido',{jobId:j.id});}}
 if(interruptedJobs)saveJson(DATA.jobs,jobs);
 let busy=false, startingOutbox=false, lastGroups=[], activeJobId=null, activeBatchId=null, lastBatchError=null, cancelActiveJob=false, uncertainSendBlock=false;
+const scheduleFile=path.join(DIR.data,'automatic-schedule.json');
+let autoSchedule=newSchedule(loadJson(scheduleFile,{}));
+function saveSchedule(){saveJson(scheduleFile,autoSchedule);}
+// Reabrir o aplicativo nunca dispara uma rodada pendente de horario anterior.
+if(autoSchedule.enabled)saveSchedule();
+let scheduleTickActive=false,autoTimer=null;
 const HEADERS={'X-Content-Type-Options':'nosniff','X-Frame-Options':'DENY','Referrer-Policy':'no-referrer','Cache-Control':'no-store','Content-Security-Policy':"default-src 'self'; img-src 'self' data: blob:; script-src 'self'; style-src 'self' 'unsafe-inline'; connect-src 'self'; object-src 'none'; frame-ancestors 'none'; base-uri 'none'"};
 function json(res,code,data,more={}){res.writeHead(code,{...HEADERS,'Content-Type':'application/json; charset=utf-8',...more});res.end(JSON.stringify(data));}
 function text(res,code,data,mime='text/plain; charset=utf-8'){res.writeHead(code,{...HEADERS,'Content-Type':mime});res.end(data);}
@@ -62,6 +69,95 @@ function queueOcr(id,force=false){
  });
  pendingOcr.set(id,promise);ocrQueue=promise;
 }
+// Inicia uma rodada manual ou programada usando a mesma protecao contra duplicacao.
+async function startOutboxBatch({repeat=false,automated=false}={}){
+ if(busy||startingOutbox)throw fail(409,'Ja existe um envio ativo.');
+ if(uncertainSendBlock)throw fail(409,'Envio anterior com resultado incerto. Confira no WhatsApp antes de outra rodada.');
+ startingOutbox=true;
+ let ids,knownGroups;
+ try{
+  if(mode==='real'&&!bridge.publicStatus().connected)throw fail(409,'Conecte o WhatsApp antes de enviar.');
+  if(repeat){
+   if(!outbox.length||outbox.some(item=>!REPEATABLE_STATUSES.has(item.status)))
+    throw fail(422,'Fila com cargas pendentes ou incertas. Conclua ou revise antes de repetir.');
+   for(const item of outbox){const img=imageRecord(item.imageId);if(!fs.existsSync(path.join(DIR.images,img.file)))throw fail(409,'Imagem salva nao encontrada.');}
+   knownGroups=await bridge.groups();
+   ids=prepareRepeat(outbox,knownGroups);
+   updateOutbox();
+   audit('lote_reutilizado',{items:ids.length,groups:outbox.reduce((n,x)=>n+x.groupIds.length,0),automated});
+  }else{
+   ids=batchSnapshot(outbox);
+   if(!ids.length)throw fail(422,'Nao ha cargas pendentes. Use Reenviar fila salva.');
+  }
+  busy=true;cancelActiveJob=false;lastBatchError=null;activeBatchId=randomUUID();
+ }finally{startingOutbox=false;}
+ const batchId=activeBatchId;
+ audit('lote_iniciado',{batchId,items:ids.length,repeat,automated});
+ void (async()=>{
+  try{
+   knownGroups=knownGroups||await bridge.groups();
+   const groupNames=new Map(knownGroups.map(g=>[g.id,g.name]));
+   for(const id of ids){
+    if(cancelActiveJob||serverShuttingDown)break;
+    const item=outbox.find(x=>x.id===id);
+    if(!item||item.status!=='pendente')continue;
+    if(item.groupIds.some(groupId=>!groupNames.has(groupId))){
+     item.status='revisar_manualmente';item.error='Grupo indisponivel. Atualize os destinatarios.';
+     item.finishedAt=new Date().toISOString();updateOutbox();break;
+    }
+    const image=imageRecord(item.imageId);
+    item.status='em_andamento';item.startedAt=new Date().toISOString();updateOutbox();
+    const job={id:randomUUID(),requestId:item.requestId,mode,status:'em_andamento',createdAt:new Date().toISOString(),
+     origin:item.origin,destination:item.destination,vehicle:item.vehicle,weight:item.weight||'',imageId:image.id,groupIds:item.groupIds,
+     progress:{done:0,total:item.groupIds.length},results:[]};
+    activeJobId=job.id;item.jobId=job.id;addJobs(job);
+    audit('lote_carga_iniciada',{batchId,itemId:item.id,jobId:job.id,groupCount:item.groupIds.length,automated});
+    try{
+     const outcome=await processPublicationQueue({job,record:{...item,imagePath:path.join(DIR.images,image.file)},bridge,
+      groupNames,isCancelRequested:()=>cancelActiveJob||serverShuttingDown,
+      afterGroup:async(j,result)=>{item.progress={...j.progress};item.results=[...j.results];updateJobs();updateOutbox();audit('envio_lote_grupo',{batchId,itemId:item.id,groupId:result.groupId,status:result.status,elapsedMs:result.elapsedMs});}
+     });
+     item.status=job.status;item.results=[...job.results];item.progress={...job.progress};item.finishedAt=job.finishedAt;
+     item.unsentGroupIds=job.unsentGroupIds||[];
+     if(REPEATABLE_STATUSES.has(job.status)){item.sendCount=(Number.isInteger(item.sendCount)?item.sendCount:0)+1;item.lastSentAt=job.finishedAt;}
+     if(outcome.timedOut){uncertainSendBlock=true;audit('lote_timeout_incertissimo',{batchId,itemId:item.id});}
+     if(outcome.uncertain||job.status==='revisar_manualmente'){updateJobs();updateOutbox();break;}
+    }catch(e){job.status='revisar_manualmente';item.status='revisar_manualmente';item.error=String(e.message||e).slice(0,300);job.error=item.error;break;}
+    finally{updateJobs();updateOutbox();activeJobId=null;}
+   }
+  }catch(e){lastBatchError=String(e.message||e).slice(0,300);audit('lote_falha_interna',{batchId,error:lastBatchError});}
+  finally{
+   const wasCancelled=cancelActiveJob;
+   audit('lote_finalizado',{batchId,cancelled:wasCancelled,automated});
+   busy=false;activeJobId=null;activeBatchId=null;cancelActiveJob=false;updateOutbox();
+   if(automated){
+    if(wasCancelled||lastBatchError||outbox.some(item=>!REPEATABLE_STATUSES.has(item.status))){
+     autoSchedule=pauseSchedule(autoSchedule,'Agendamento pausado: rodada cancelada ou resultado a revisar. Confira o historico.');
+    }else if(autoSchedule.enabled){autoSchedule.lastResult='Ultima rodada concluida sem resultados incertos.';}
+    saveSchedule();
+   }
+  }
+ })();
+ return {batchId,items:ids.length};
+}
+
+async function autoScheduleTick(){
+ if(scheduleTickActive||serverShuttingDown||!scheduleDue(autoSchedule))return;
+ scheduleTickActive=true;
+ try{
+  // Reservar o proximo horario ANTES de iniciar, impedindo clique/timer duplicado.
+  autoSchedule=reschedule(autoSchedule,Date.now(),'Verificando fila programada...');saveSchedule();
+  if(busy||startingOutbox||activeBatchId){autoSchedule.lastResult='Horario ignorado: ainda havia uma rodada em andamento.';saveSchedule();return;}
+  if(mode==='real'&&!bridge.publicStatus().connected){autoSchedule=pauseSchedule(autoSchedule,'Pausado: WhatsApp desconectado. Ative novamente depois de conectar.');saveSchedule();return;}
+  if(!outbox.length||outbox.some(x=>!['pendente',...REPEATABLE_STATUSES].includes(x.status))){autoSchedule=pauseSchedule(autoSchedule,'Pausado: fila vazia ou itens a revisar.');saveSchedule();return;}
+  const allPending=outbox.every(x=>x.status==='pendente'),allSent=outbox.every(x=>REPEATABLE_STATUSES.has(x.status));
+  if(!allPending&&!allSent){autoSchedule=pauseSchedule(autoSchedule,'Pausado: ha cargas pendentes misturadas com finalizadas.');saveSchedule();return;}
+  const data=await startOutboxBatch({repeat:allSent,automated:true});
+  autoSchedule.lastResult=`Rodada automatica iniciada: ${data.items} carga(s).`;saveSchedule();
+ }catch(e){autoSchedule=pauseSchedule(autoSchedule,'Pausado apos erro: '+String(e.message||e).slice(0,210));saveSchedule();audit('agendamento_erro',{error:autoSchedule.lastResult});}
+ finally{scheduleTickActive=false;}
+}
+
 function wrapError(e){return {error:e.message||'Erro desconhecido',code:e.status||500};}
 
 async function request(req,res){
@@ -133,7 +229,7 @@ async function request(req,res){
    if(busy||startingOutbox)throw fail(409,'Não redefina a sessão durante a fila de envio.');
    const b=await body(req,2000);
    if(b.confirm!=='REDEFINIR SESSAO')throw fail(422,'Confirmação inválida. Sessão preservada.');
-   const status=await bridge.resetSession();lastGroups=[];
+   const status=await bridge.resetSession();lastGroups=[];if(autoSchedule.enabled){autoSchedule=pauseSchedule(autoSchedule,'Pausado apos trocar o numero do WhatsApp.');saveSchedule();}
    // Destinatários da conta anterior não devem ser reutilizados na nova conta.
    let pendingReview=0;
    for(const item of outbox){
@@ -148,7 +244,7 @@ async function request(req,res){
   if(req.method==='GET'&&pathname==='/api/groups'){
    const list=await bridge.groups();lastGroups=groupSafelist(list);return json(res,200,{groups:lastGroups,mode});
   }
-  if(req.method==='GET'&&pathname==='/api/outbox')return json(res,200,{activeBatchId,activeJobId,uncertainSendBlock,items:outbox});
+  if(req.method==='GET'&&pathname==='/api/outbox')return json(res,200,{activeBatchId,activeJobId,uncertainSendBlock,items:outbox,lastBatchError});
   if(req.method==='GET'&&pathname==='/api/jobs')return json(res,200,{activeJobId,uncertainSendBlock,jobs:jobs.slice(-30).reverse().map(j=>({id:j.id,createdAt:j.createdAt,mode:j.mode,origin:j.origin,destination:j.destination,status:j.status,progress:j.progress,results:j.results}))});
   if(req.method==='POST'&&pathname==='/api/jobs/clear'){
    if(busy||startingOutbox||activeJobId||activeBatchId)throw fail(409,'Aguarde a conclusão dos envios antes de limpar o histórico.');
@@ -184,79 +280,34 @@ async function request(req,res){
   if(req.method==='POST'&&pathname==='/api/outbox/cancel'){
    if(!busy||!activeBatchId)throw fail(409,'Não há lote de publicações ativo.');
    const b=await body(req,2000);if(b.batchId!==activeBatchId)throw fail(409,'Identificador do lote divergente.');
-   cancelActiveJob=true;audit('lote_cancelamento_solicitado',{batchId:activeBatchId});
+   cancelActiveJob=true;if(autoSchedule.enabled){autoSchedule=pauseSchedule(autoSchedule,'Pausado pelo operador.');saveSchedule();}audit('lote_cancelamento_solicitado',{batchId:activeBatchId});
    return json(res,202,{ok:true,message:'Interrupção solicitada. O envio em andamento pode ser concluído.'});
   }
-  if(req.method==='POST'&&pathname==='/api/outbox/start'){
-   if(busy||startingOutbox)throw fail(409,'Já existe um envio ativo.');
-   if(uncertainSendBlock)throw fail(409,'Envio anterior com resultado incerto. Confira no WhatsApp e reinicie antes de outro lote.');
-   startingOutbox=true;
-   let ids, knownGroups, repeat=false;
-   try{
-    const request=await body(req,2000);
-    repeat=request.repeat===true;
-    if(request.repeat!==undefined && !repeat)throw fail(422,'Solicitação de repetição inválida.');
-    if(repeat && request.confirm!=='REPETIR FILA')throw fail(422,'Confirme o reenvio da fila completa.');
-    if(mode==='real'&&!bridge.publicStatus().connected)throw fail(409,'Conecte o WhatsApp antes de enviar.');
-    if(repeat){
-     if(!outbox.length||outbox.some(item=>!REPEATABLE_STATUSES.has(item.status)))
-      throw fail(422,'A fila contém cargas pendentes, interrompidas ou a revisar. Conclua ou revise antes de repetir todas.');
-     // Validar toda a rodada antes de alterar o estado de qualquer imagem.
-     for(const item of outbox){const image=imageRecord(item.imageId);if(!fs.existsSync(path.join(DIR.images,image.file)))throw fail(409,'Uma imagem salva não está mais disponível. Reimporte antes de reenviar.');}
-     knownGroups=await bridge.groups();
-     ids=prepareRepeat(outbox,knownGroups);
-     updateOutbox();
-     audit('lote_reutilizado',{items:ids.length,groups:outbox.reduce((n,x)=>n+x.groupIds.length,0)});
-    }else{
-     ids=batchSnapshot(outbox);
-     if(!ids.length)throw fail(422,'Não há cargas pendentes. Use Reenviar fila salva para uma nova rodada.');
+   if(req.method==='GET'&&pathname==='/api/schedule')return json(res,200,{schedule:autoSchedule});
+   if(req.method==='POST'&&pathname==='/api/schedule'){
+    if(serverShuttingDown)throw fail(503,'Aplicativo encerrando.');
+    const cfg=await body(req,2000);
+    if(cfg.enabled===true){
+     if(cfg.confirm!=='ATIVAR AUTOMATICO')throw fail(422,'Confirme a ativacao do envio programado.');
+     if(!outbox.length)throw fail(422,'Cadastre imagens e grupos na fila antes de ativar.');
+     if(outbox.some(x=>!x.groupIds?.length || !['pendente',...REPEATABLE_STATUSES].includes(x.status)))throw fail(422,'Revise a fila antes de ativar o agendamento.');
+     if(!outbox.every(x=>x.status==='pendente')&&!outbox.every(x=>REPEATABLE_STATUSES.has(x.status)))throw fail(422,'A fila precisa estar inteiramente pendente ou concluida para agendar.');
     }
-    busy=true;cancelActiveJob=false;lastBatchError=null;activeBatchId=randomUUID();
-   }finally{startingOutbox=false;}
-   const batchId=activeBatchId;
-   audit('lote_iniciado',{batchId,items:ids.length,repeat});
-   void (async()=>{
-    try{
-     knownGroups=knownGroups||await bridge.groups();
-     const groupNames=new Map(knownGroups.map(g=>[g.id,g.name]));
-     for(const id of ids){
-      if(cancelActiveJob||serverShuttingDown)break;
-      const item=outbox.find(x=>x.id===id);
-      if(!item||item.status!=='pendente')continue;
-      if(item.groupIds.some(groupId=>!groupNames.has(groupId))){
-       item.status='revisar_manualmente';item.error='Um ou mais grupos não estão disponíveis. Atualize os grupos antes de criar uma nova carga.';
-       item.finishedAt=new Date().toISOString();updateOutbox();break;
-      }
-      const image=imageRecord(item.imageId);
-      item.status='em_andamento';item.startedAt=new Date().toISOString();updateOutbox();
-      const job={id:randomUUID(),requestId:item.requestId,mode,status:'em_andamento',createdAt:new Date().toISOString(),
-       origin:item.origin,destination:item.destination,vehicle:item.vehicle,weight:item.weight||'',imageId:image.id,groupIds:item.groupIds,
-       progress:{done:0,total:item.groupIds.length},results:[]};
-      activeJobId=job.id;item.jobId=job.id;addJobs(job);
-      audit('lote_carga_iniciada',{batchId,itemId:item.id,jobId:job.id,groupCount:item.groupIds.length});
-      try{
-       const outcome=await processPublicationQueue({job,record:{...item,imagePath:path.join(DIR.images,image.file)},bridge,
-        groupNames,isCancelRequested:()=>cancelActiveJob||serverShuttingDown,
-        afterGroup:async(j,result)=>{item.progress={...j.progress};item.results=[...j.results];updateJobs();updateOutbox();audit('envio_lote_grupo',{batchId,itemId:item.id,groupId:result.groupId,status:result.status,elapsedMs:result.elapsedMs});}
-       });
-       item.status=job.status;item.results=[...job.results];item.progress={...job.progress};item.finishedAt=job.finishedAt;
-       if(REPEATABLE_STATUSES.has(job.status)){item.sendCount=(Number.isInteger(item.sendCount)?item.sendCount:0)+1;item.lastSentAt=job.finishedAt;}
-       if(outcome.timedOut){uncertainSendBlock=true;audit('lote_timeout_incertissimo',{batchId,itemId:item.id});}
-       if(outcome.uncertain||job.status==='revisar_manualmente'){
-        updateJobs();updateOutbox();break;
-       }
-      }catch(e){job.status='revisar_manualmente';item.status='revisar_manualmente';item.error=String(e.message||e).slice(0,300);job.error=item.error;break;}
-      finally{updateJobs();updateOutbox();activeJobId=null;}
-     }
-    }catch(e){lastBatchError=String(e.message||e).slice(0,300);audit('lote_falha_interna',{batchId,error:lastBatchError});}
-    finally{audit('lote_finalizado',{batchId,cancelled:cancelActiveJob});busy=false;activeJobId=null;activeBatchId=null;cancelActiveJob=false;updateOutbox();}
-   })();
-   return json(res,202,{batchId,items:ids.length});
-  }
+    autoSchedule=changeSchedule(autoSchedule,cfg);saveSchedule();
+    audit('agendamento_alterado',{enabled:autoSchedule.enabled,intervalMinutes:autoSchedule.intervalMinutes});
+    return json(res,200,{schedule:autoSchedule});
+   }
+   if(req.method==='POST'&&pathname==='/api/outbox/start'){
+    const request=await body(req,2000);
+    const repeat=request.repeat===true;
+    if(request.repeat!==undefined&&!repeat)throw fail(422,'Solicitacao de repeticao invalida.');
+    if(repeat&&request.confirm!=='REPETIR FILA')throw fail(422,'Confirme o reenvio da fila completa.');
+    return json(res,202,await startOutboxBatch({repeat,automated:false}));
+   }
   if(req.method==='POST'&&pathname==='/api/cancel'){
    const b=await body(req,2000);
    if(!busy||!activeJobId||b.jobId!==activeJobId)throw fail(409,'Não há fila ativa com esse identificador.');
-   cancelActiveJob=true;audit('envio_cancelamento_solicitado',{jobId:activeJobId});
+   cancelActiveJob=true;if(autoSchedule.enabled){autoSchedule=pauseSchedule(autoSchedule,'Pausado pelo operador.');saveSchedule();}audit('envio_cancelamento_solicitado',{jobId:activeJobId});
    return json(res,202,{ok:true,jobId:activeJobId,message:'Cancelamento solicitado. A mensagem em curso pode ainda ser submetida.'});
   }
   if(req.method==='POST'&&pathname==='/api/send'){
@@ -290,6 +341,8 @@ async function request(req,res){
  }catch(e){const err=wrapError(e);if(err.code>=500)console.error('[ALATUS]',pathname,err.error);return json(res,err.code,err);}
 }
 async function shutdownGracefully(){
+ if(autoTimer!==null){clearInterval(autoTimer);autoTimer=null;}
+
  // Não interrompe uma chamada sendMessage em andamento; aguarda até o timeout
  // da fila para impedir que o próximo grupo receba a mensagem ao fechar.
  const deadline=Date.now()+57_000;
@@ -303,11 +356,12 @@ const server=http.createServer((req,res)=>{request(req,res).catch(e=>{console.er
 server.requestTimeout=90_000;server.headersTimeout=15_000;server.maxRequestsPerSocket=100;
 server.on('error',e=>{console.error(e.code==='EADDRINUSE'?'ERRO S001: Porta 3187 já está ocupada. Encerre o painel anterior (Ctrl+C).':e);process.exitCode=1;});
 server.listen(port,host,()=>{
+ autoTimer=setInterval(()=>{void autoScheduleTick();},5000);autoTimer.unref?.();
  console.log(`ALATUS v0.7 - MODO ${mode.toUpperCase()} | http://${host}:${port}`);
  console.log(`DADOS: ${ROOT}`);
  if(mode==='simulacao')console.log('MODO TESTE: Nenhuma mensagem será enviada ao WhatsApp.');
  if(mode==='real'){
-  console.log('MODO REAL: Aguarde aprovação no painel para cada envio. Use número de teste.');
+  console.log('MODO REAL: envio manual ou programado com ativacao explicita; revise destinatarios.');
   if(fs.existsSync(path.join(DIR.session,'creds.json'))) {
    console.log('Sessão encontrada: iniciando reconexão sem enviar mensagens.');
    bridge.connect().catch(e=>console.error('Reconexão não concluída:',e.message));

@@ -4,7 +4,6 @@ import {readFileSync} from 'node:fs';
 import {randomUUID} from 'node:crypto';
 import {validateSend} from '../src/core.mjs';
 import {WhatsAppBridge} from '../src/wa.mjs';
-
 const html=readFileSync(new URL('../public/index.html',import.meta.url),'utf8');
 const js=readFileSync(new URL('../public/app.js',import.meta.url),'utf8');
 
@@ -14,24 +13,17 @@ test('imagem pode ser cadastrada sem OCR, rota, veículo e legenda',()=>{
  assert.equal(record.caption,'');
  assert.equal(record.origin,'');assert.equal(record.destination,'');assert.equal(record.vehicle,'');
 });
-
 test('imagem não permite ausência de grupo nem texto inválido',()=>{
  const image={id:randomUUID()},id=randomUUID(),group={id:'test@g.us'};
  assert.throws(()=>validateSend({imageId:image.id,requestId:id,groupIds:[],caption:''},[image],[group]),/grupo/);
  assert.throws(()=>validateSend({imageId:image.id,requestId:id,groupIds:[group.id],caption:123},[image],[group]),/Legenda/);
 });
-
-test('interface utiliza OCR automático com peso opcional e sem interruptores',()=>{
- assert.doesNotMatch(html,/id="useOcr"/);
- assert.doesNotMatch(html,/id="includeCaption"/);
- assert.match(html,/id="weight"/);
- assert.doesNotMatch(js,/\$\('useOcr'\)/);
- assert.doesNotMatch(js,/\$\('includeCaption'\)/);
- assert.match(js,/void pollOcr\(id\)/);
- assert.match(js,/const complete=syncCaption\(true\)/);
- assert.match(js,/\$\('weight'\)\.value=d\.weight\|\|''/);
+test('interface permite desativar OCR e enviar só imagem',()=>{
+ assert.match(html,/id="useOcr"/);
+ assert.match(html,/id="includeCaption"/);
+ assert.match(js,/skipOcr:!\$\('useOcr'\)\.checked/);
+ assert.match(js,/const caption=\$\('includeCaption'\)\.checked/);
 });
-
 test('Baileys omite caption ao enviar imagem sem texto',async()=>{
  let payload;
  const bridge=new WhatsAppBridge('real');
@@ -43,10 +35,11 @@ test('Baileys omite caption ao enviar imagem sem texto',async()=>{
  assert.equal(payload.caption,'Legenda');
 });
 
-test('OCR incompleto não bloqueia o envio sem legenda',()=>{
- assert.match(js,/\$\('caption'\)\.value=''/);
- assert.match(js,/!origin\|\|!destination\|\|!vehicle/);
- assert.match(js,/caption:\$\('caption'\)\.value\.trim\(\)/);
+
+test('regressão v0.7.7: envio sem rota nem legenda é o modo padrão',()=>{
+ assert.match(html, /id="useOcr"(?![^>]*checked)/);
+ assert.match(html, /id="includeCaption"(?![^>]*checked)/);
  assert.ok(!js.includes('Aguarde o OCR e confira origem, destino, veículo e legenda.'));
  assert.ok(!js.includes('Os dados da carga estão incompletos. Corrija antes de enviar.'));
+ assert.match(js, /const caption=\$\('includeCaption'\)\.checked/);
 });

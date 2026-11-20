@@ -24,7 +24,7 @@ test('cache expira, limita entradas e não permite modificar resposta anterior',
  cache.clear();assert.equal(cache.snapshot().entries,0);
 });
 
-test('96 envios, 8 imagens diferentes: apenas 8 uploads de mídia; sem paralelismo',async()=>{
+test('96 envios, 8 imagens diferentes: apenas 8 uploads de mídia; concorrencia limitada',async()=>{
  const base=mkdtempSync(path.join(os.tmpdir(),'alatus-upload-cache-'));
  const old={...DIR};
  const imageDir=path.join(base,'images','entrada');
@@ -65,7 +65,7 @@ test('96 envios, 8 imagens diferentes: apenas 8 uploads de mídia; sem paralelis
    assert.ok(args.job.results.every(x=>x.elapsedMs>=0));
   }
   assert.equal(transmissions,96);assert.equal(uploads,8);
-  assert.equal(maxConcurrent,1);
+  assert.ok(maxConcurrent>=2&&maxConcurrent<=3);
   assert.ok(config.mediaCache.snapshot().hits>=88);
   assert.ok(config.mediaCache.snapshot().misses>=8);
   await bridge.connect({restart:true});
