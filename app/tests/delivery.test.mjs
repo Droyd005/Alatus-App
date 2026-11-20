@@ -3,6 +3,9 @@ import assert from 'node:assert/strict';
 import {EventEmitter} from 'node:events';
 import {createDeliveryTracker} from '../src/delivery.mjs';
 import {WhatsAppBridge} from '../src/wa.mjs';
+import {setupDirs} from '../src/core.mjs';
+// Cada arquivo de teste roda em processo isolado no Node: preparar logs antes de shutdown().
+setupDirs();
 
 const group='equipe@g.us';
 test('ID gerado não equivale a confirmação do servidor, entregue ou lido',()=>{
