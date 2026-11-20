@@ -9,6 +9,7 @@ async function api(endpoint,options={}){
  return data;
 }
 const post=(endpoint,data)=>api(endpoint,{method:'POST',body:JSON.stringify(data)});
+function deliveryText(r){const label={aguardando_servidor:'aguardando confirmação do WhatsApp',confirmado_servidor:'confirmado pelo servidor WhatsApp',entrega_dispositivo:'recebido por ao menos um dispositivo',lido:'leitura registrada',reproduzido:'reprodução registrada',falhou:'FALHA de envio, confira o WhatsApp'};return label[r.deliveryStatus]||'sem confirmação de entrega';}
 function labelStatus(s){return ({simulacao:'SIMULAÇÃO (SEM ENVIO)',real:'MODO REAL'})[s]||s;}
 function setMode(newMode){mode=newMode;document.body.classList.remove('simulacao','real');document.body.classList.add(mode);}
 function syncCaption(silent=false){
@@ -156,7 +157,7 @@ async function loadOutbox(){
    const destinations=document.createElement('div');destinations.className='muted';destinations.textContent=(item.groupNames||[]).join(' · ');
    info.append(title,details,destinations);
    if(item.error){const err=document.createElement('div');err.className='bad';err.textContent=item.error;info.append(err);}
-   for(const result of item.results||[]){const line=document.createElement('div');line.className='muted';line.textContent=`• ${result.groupName}: ${result.status}`;info.append(line);}
+   for(const result of item.results||[]){const line=document.createElement('div');line.className='muted';line.textContent=`• ${result.groupName}: ${result.status}${result.status==='submetido'?' | '+deliveryText(result):''}`;info.append(line);}
    const remove=document.createElement('button');remove.type='button';remove.className='btn secondary outbox-remove';remove.textContent='Remover';remove.disabled=!!activeBatchId;
    remove.addEventListener('click',async()=>{try{await post('/api/outbox/remove',{id:item.id});await loadOutbox();}catch(e){message('outboxStatus',e.message,'bad');}});
    box.append(thumb,info,remove);target.append(box);
@@ -175,7 +176,7 @@ async function loadSchedule(force=false){
 async function saveSchedule(){
  const enabled=$('scheduleEnabled').checked;
  const intervalMinutes=Number($('scheduleMinutes').value);
- if(!Number.isInteger(intervalMinutes)||intervalMinutes<20||intervalMinutes>1440){message('scheduleStatus','Escolha de 20 a 1440 minutos.','bad');return;}
+ if(!Number.isSafeInteger(intervalMinutes)||intervalMinutes<=0){message('scheduleStatus','Informe um intervalo positivo em minutos inteiros.','bad');return;}
  if(enabled){
   const total=cachedOutbox.reduce((n,item)=>n+(item.groupIds?.length||0),0);
   if(!cachedOutbox.length){message('scheduleStatus','Cadastre a fila antes de ativar o envio automático.','bad');return;}
@@ -228,7 +229,7 @@ async function loadJobs(){try{const data=await api('/api/jobs');
  $('history').replaceChildren();for(const j of data.jobs){const div=document.createElement('div');div.className='history';
   const summary=document.createElement('div');summary.className='job-status';summary.textContent=`${new Date(j.createdAt).toLocaleString('pt-BR')} | ${j.mode} | ${j.status}${j.progress?' | '+j.progress.done+'/'+j.progress.total:''}`;div.append(summary);
   const line=document.createElement('div');line.textContent=j.origin&&j.destination?`${j.origin} → ${j.destination}`:'Imagem enviada sem rota informada';div.append(line);
-  for(const r of j.results||[]){const detail=document.createElement('div');detail.textContent=`• ${r.groupName}: ${r.status}${r.error?' ('+r.error+')':''}`;div.append(detail);}
+  for(const r of j.results||[]){const detail=document.createElement('div');detail.textContent=`• ${r.groupName}: ${r.status}${r.status==='submetido'?' | '+deliveryText(r):''}${r.error?' ('+r.error+')':''}`;div.append(detail);}
   $('history').append(div);}if(!data.jobs.length)$('history').textContent='Sem publicações registradas.';
  }catch(e){$('history').textContent=e.message;}}
 async function publish(){if(isBusy)return;const groupIds=selectedGroups();if(!imageId){message('sendStatus','Selecione uma arte primeiro.','bad');return;}

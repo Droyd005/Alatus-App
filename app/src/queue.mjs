@@ -29,7 +29,7 @@ export async function processPublicationQueue({job,record,bridge,groupNames,afte
      new Promise((_,reject)=>{timer=setTimeout(()=>{hadTimeout=true;reject(new Error('Tempo limite de envio. Resultado incerto; confira o grupo antes de repetir.'));},timeoutMs);})
     ]);
     if(!sent?.messageId && !sent?.simulated)throw new Error('Nao foi possivel confirmar o identificador da tentativa.');
-    result={groupId:id,groupName:name,status:sent.simulated?'simulado':'submetido',messageId:sent.messageId,elapsedMs:Math.round(performance.now()-sentAt)};
+    result={groupId:id,groupName:name,status:sent.simulated?'simulado':'submetido',messageId:sent.messageId,elapsedMs:Math.round(performance.now()-sentAt),submittedAt:new Date().toISOString(),deliveryStatus:sent.simulated?'simulado':'aguardando_servidor'};
    }catch(e){
     uncertain=true;timedOut=timedOut||hadTimeout;
     result={groupId:id,groupName:name,status:'incerto',error:String(e.message||e).slice(0,350),elapsedMs:Math.round(performance.now()-sentAt)};

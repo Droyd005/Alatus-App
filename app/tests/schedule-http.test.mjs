@@ -44,7 +44,9 @@ test('interface salva liga/desliga e exige autorizacao; atualizacao nao inicia r
  const img=(await r.json()).image;
  r=await post('/api/outbox/add',{imageId:img.id,caption:'',groupIds:groups.map(g=>g.id),requestId:randomUUID()});assert.equal(r.status,201);
  r=await post('/api/schedule',{enabled:true,intervalMinutes:20});assert.equal(r.status,422,'Precisa confirmar ativacao');
- r=await post('/api/schedule',{enabled:true,intervalMinutes:1,confirm:'ATIVAR AUTOMATICO'});assert.equal(r.status,422,'Intervalo minimo 20');
+ r=await post('/api/schedule',{enabled:true,intervalMinutes:0,confirm:'ATIVAR AUTOMATICO'});assert.equal(r.status,422,'Intervalo nulo');
+ r=await post('/api/schedule',{enabled:true,intervalMinutes:1,confirm:'ATIVAR AUTOMATICO'});assert.equal(r.status,200,'Um minuto e valido');
+ r=await post('/api/schedule',{enabled:true,intervalMinutes:3000,confirm:'ATIVAR AUTOMATICO'});assert.equal(r.status,200,'Intervalo acima de um dia e valido');
  const before=Date.now();r=await post('/api/schedule',{enabled:true,intervalMinutes:20,confirm:'ATIVAR AUTOMATICO'});assert.equal(r.status,200);
  s=(await r.json()).schedule;assert.equal(s.enabled,true);assert.ok(Date.parse(s.nextRunAt)>=before+20*60_000);
  assert.equal((await read('/api/jobs')).jobs.length,0,'Ligar nao dispara imediatamente');

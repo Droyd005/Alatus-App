@@ -47,13 +47,13 @@ body::before{content:"";position:fixed;inset:0;background:linear-gradient(100deg
  <div class="btn-row" style="align-items:center">
  <label class="optional-toggle" for="scheduleEnabled"><input type="checkbox" id="scheduleEnabled"> Ativar envio automático</label>
  <label for="scheduleMinutes" style="max-width:190px">Repetir a cada (minutos)
-  <input type="number" id="scheduleMinutes" class="form-control" min="20" max="1440" step="1" value="20" inputmode="numeric">
+  <input type="number" id="scheduleMinutes" class="form-control" min="1" step="1" value="20" inputmode="numeric">
  </label>
  <button id="saveSchedule" class="btn secondary" type="button">Salvar programação</button>
  </div>
- <p class="notice" id="scheduleStatus" role="status">Envio automático desligado.</p>
+ <p class="notice" id="scheduleStatus" role="status">Envio automático desligado.</p><p class="data-note">Informe qualquer quantidade positiva de minutos inteiros. Rodadas não se sobrepõem; falhas de entrega pausam o agendamento. O WhatsApp pode impor suas próprias restrições.</p>
  </div>
  <div class="btn-row" style="margin-top:14px"><button id="clearOutbox" type="button" class="btn negative">Excluir itens finalizados</button></div>
 <p class="data-note">A fila, as imagens, as legendas e os grupos ficam salvos para novos envios. Rodadas manuais exigem confirmação; rodadas automáticas precisam de ativação explícita e recebem histórico separado. Uma falha incerta impede repetição automática. Após reiniciar, nenhuma rodada é recuperada ou disparada imediatamente; a próxima segue o intervalo salvo.</p></section>
-<section class="card"><h2>5. Histórico</h2><div class="btn-row"><button id="reloadJobs" class="btn secondary">Atualizar histórico</button><button id="clearJobs" type="button" class="btn negative">Limpar histórico</button></div><p id="historyStatus" class="toast" role="status"></p><div id="history" style="margin-top:12px"></div><p class="data-note">“Submetido” não prova entrega/leitura. Envios incertos não são reenviados automaticamente.</p></section>
+<section class="card"><h2>5. Histórico</h2><div class="btn-row"><button id="reloadJobs" class="btn secondary">Atualizar histórico</button><button id="clearJobs" type="button" class="btn negative">Limpar histórico</button></div><p id="historyStatus" class="toast" role="status"></p><div id="history" style="margin-top:12px"></div><p class="data-note">“Submetido” significa que o Baileys retornou o ID da mensagem, não que ela chegou ao grupo. Confirmações de participantes não representam entrega para todos. Envios incertos não são repetidos automaticamente.</p></section>
 </div></div></div></div><script src="/app.js" defer></script></body></html>

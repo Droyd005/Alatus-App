@@ -32,6 +32,57 @@ function saveSchedule(){saveJson(scheduleFile,autoSchedule);}
 // Reabrir o aplicativo nunca dispara uma rodada pendente de horario anterior.
 if(autoSchedule.enabled)saveSchedule();
 let scheduleTickActive=false,autoTimer=null;
+// Atualizacoes de ACK chegam em rajadas. Persistir uma unica vez por janela evita travar o envio.
+let deliveryWriteTimer=null;
+function persistDeliveryUpdates(urgent=false){
+ if(urgent){if(deliveryWriteTimer!==null){clearTimeout(deliveryWriteTimer);deliveryWriteTimer=null;}updateJobs();updateOutbox();return;}
+ if(deliveryWriteTimer!==null)return;
+ deliveryWriteTimer=setTimeout(()=>{deliveryWriteTimer=null;updateJobs();updateOutbox();},350);
+ deliveryWriteTimer.unref?.();
+}
+
+// Mantem os estados do WhatsApp distintos de "submetido". ID nao prova entrega.
+function applyReceipt(job,result,receipt){
+ if(!receipt||!result||!result.messageId||result.groupId!==receipt.groupId||result.messageId!==receipt.messageId)return false;
+ if(result.deliveryCode===receipt.deliveryCode)return false;
+ result.deliveryStatus=receipt.deliveryStatus;result.deliveryCode=receipt.deliveryCode;
+ result.deliveryAt=receipt.deliveryAt;
+ const begin=Date.parse(result.submittedAt||job.createdAt);
+ if(Number.isFinite(begin))result.confirmationDelayMs=Math.max(0,Date.parse(receipt.deliveryAt)-begin);
+ if(receipt.deliveryStatus==='falhou'){
+  job.deliveryFailure=true;uncertainSendBlock=true;
+  // Um retorno expresso de erro deve interromper novos grupos e proibir repeticao programada.
+  cancelActiveJob=true;
+  if(autoSchedule.enabled){autoSchedule=pauseSchedule(autoSchedule,'Pausado: o WhatsApp reportou falha de envio. Confira o historico.');saveSchedule();}
+ }
+ return true;
+}
+function reconcileJobReceipts(job){
+ let changed=false;
+ for(const result of job.results||[]){
+  if(!result.messageId)continue;
+  const receipt=bridge.getDeliveryStatus?.(result.groupId,result.messageId);
+  if(receipt&&applyReceipt(job,result,receipt))changed=true;
+ }
+ return changed;
+}
+bridge.onDeliveryUpdate=receipt=>{
+ let changed=false;
+ for(const job of jobs){
+  const result=job.results?.find(x=>x.groupId===receipt.groupId&&x.messageId===receipt.messageId);
+  if(!result||!applyReceipt(job,result,receipt))continue;
+  changed=true;
+  const item=outbox.find(x=>x.jobId===job.id);
+  if(item){
+   const row=item.results?.find(x=>x.groupId===receipt.groupId&&x.messageId===receipt.messageId);
+   if(row)Object.assign(row,{deliveryStatus:result.deliveryStatus,deliveryCode:result.deliveryCode,deliveryAt:result.deliveryAt,confirmationDelayMs:result.confirmationDelayMs});
+   if(job.deliveryFailure){item.status='revisar_manualmente';item.error='O WhatsApp reportou falha de envio. Confira os grupos antes de repetir.';}
+  }
+  if(job.deliveryFailure&&job.status!=='em_andamento')job.status='revisar_manualmente';
+  audit('whatsapp_confirmacao',{jobId:job.id,groupId:receipt.groupId,status:receipt.deliveryStatus,delayMs:result.confirmationDelayMs});
+ }
+ if(changed)persistDeliveryUpdates(receipt.deliveryStatus==='falhou');
+};
 const HEADERS={'X-Content-Type-Options':'nosniff','X-Frame-Options':'DENY','Referrer-Policy':'no-referrer','Cache-Control':'no-store','Content-Security-Policy':"default-src 'self'; img-src 'self' data: blob:; script-src 'self'; style-src 'self' 'unsafe-inline'; connect-src 'self'; object-src 'none'; frame-ancestors 'none'; base-uri 'none'"};
 function json(res,code,data,more={}){res.writeHead(code,{...HEADERS,'Content-Type':'application/json; charset=utf-8',...more});res.end(JSON.stringify(data));}
 function text(res,code,data,mime='text/plain; charset=utf-8'){res.writeHead(code,{...HEADERS,'Content-Type':mime});res.end(data);}
@@ -115,8 +166,9 @@ async function startOutboxBatch({repeat=false,automated=false}={}){
     try{
      const outcome=await processPublicationQueue({job,record:{...item,imagePath:path.join(DIR.images,image.file)},bridge,
       groupNames,isCancelRequested:()=>cancelActiveJob||serverShuttingDown,
-      afterGroup:async(j,result)=>{item.progress={...j.progress};item.results=[...j.results];updateJobs();updateOutbox();audit('envio_lote_grupo',{batchId,itemId:item.id,groupId:result.groupId,status:result.status,elapsedMs:result.elapsedMs});}
+      afterGroup:async(j,result)=>{reconcileJobReceipts(j);item.progress={...j.progress};item.results=[...j.results];updateJobs();updateOutbox();audit('envio_lote_grupo',{batchId,itemId:item.id,groupId:result.groupId,status:result.status,elapsedMs:result.elapsedMs});}
      });
+     if(job.deliveryFailure){job.status='revisar_manualmente';outcome.uncertain=true;}
      item.status=job.status;item.results=[...job.results];item.progress={...job.progress};item.finishedAt=job.finishedAt;
      item.unsentGroupIds=job.unsentGroupIds||[];
      if(REPEATABLE_STATUSES.has(job.status)){item.sendCount=(Number.isInteger(item.sendCount)?item.sendCount:0)+1;item.lastSentAt=job.finishedAt;}
@@ -329,8 +381,9 @@ async function request(req,res){
      const outcome=await processPublicationQueue({job,record:{...record,imagePath:path.join(DIR.images,record.image.file)},bridge,
       groupNames:new Map(lastGroups.map(g=>[g.id,g.name])),
       isCancelRequested:()=>cancelActiveJob,
-      afterGroup:async(j,result)=>{updateJobs();audit('envio_grupo',{jobId:j.id,groupId:result.groupId,status:result.status,elapsedMs:result.elapsedMs});}
+      afterGroup:async(j,result)=>{reconcileJobReceipts(j);updateJobs();audit('envio_grupo',{jobId:j.id,groupId:result.groupId,status:result.status,elapsedMs:result.elapsedMs});}
      });
+     if(job.deliveryFailure)job.status='revisar_manualmente';
      if(outcome.timedOut){uncertainSendBlock=true;audit('envio_bloqueado_apos_timeout',{jobId:job.id});}
     }catch(e){job.status='revisar_manualmente';job.error=String(e.message||e).slice(0,300);audit('envio_falha_interna',{jobId:job.id,error:job.error});}
     finally{updateJobs();audit('envio_finalizado',{jobId:job.id,status:job.status,completed:job.progress.done,total:job.progress.total});busy=false;activeJobId=null;cancelActiveJob=false;}
@@ -341,6 +394,7 @@ async function request(req,res){
  }catch(e){const err=wrapError(e);if(err.code>=500)console.error('[ALATUS]',pathname,err.error);return json(res,err.code,err);}
 }
 async function shutdownGracefully(){
+ if(deliveryWriteTimer!==null)persistDeliveryUpdates(true);
  if(autoTimer!==null){clearInterval(autoTimer);autoTimer=null;}
 
  // Não interrompe uma chamada sendMessage em andamento; aguarda até o timeout

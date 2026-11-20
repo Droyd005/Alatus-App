@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import {DIR, audit} from './core.mjs';
 import {createMediaUploadCache} from './media-cache.mjs';
+import {createDeliveryTracker} from './delivery.mjs';
 
 // 515 (restartRequired) é normal após ler um QR no Baileys.
 // O pareamento somente termina após abrir um NOVO socket com credenciais persistidas.
@@ -36,11 +37,12 @@ export class WhatsAppBridge {
   this.retryTimer=null;this.credentialFlush=Promise.resolve();
   this.lastDisconnectCode=null;this.dependencies=dependencies;
   this.shuttingDown=false;this.groupMetadata=new Map();this.mediaCache=createMediaUploadCache();
+   this.onDeliveryUpdate=null;this.deliveryTracker=createDeliveryTracker({onChange:value=>this.onDeliveryUpdate?.(value)});
  }
  publicStatus() {return {mode:this.mode,status:this.status,qr:this.qr,qrCreatedAt:this.qrCreatedAt,lastError:this.lastError,connected:this.status==='conectado',connectedNumber:this.status==='conectado'?phoneFromJid(this.socket?.user?.id):null,groupsLoaded:this.lastGroups.length,reconnectAttempt:this.retries,lastDisconnectCode:this.lastDisconnectCode};}
  _clearTimer() {if(this.retryTimer!==null){clearTimeout(this.retryTimer);this.retryTimer=null;}}
  _closeSocket() {
-  const previous=this.socket;this.socket=null;this.mediaCache.clear();
+  const previous=this.socket;this.socket=null;this.mediaCache.clear();this.deliveryTracker.clear();
   if(previous&&typeof previous.end==='function') {
    try { previous.end(new Error('Conexão reiniciada pelo painel')); } catch(e) {audit('socket_fechamento_erro',{message:e.message});}
   }
@@ -81,7 +83,25 @@ export class WhatsAppBridge {
    }
   });
   this.socket=socket;this.qr=null;this.qrCreatedAt=null;this.status='conectando';
-  socket.ev.on('creds.update',()=>{
+  socket.ev.on('messages.update',updates=>{
+    if(generation!==this.generation)return;
+    for(const event of Array.isArray(updates)?updates:[]){
+     if(event?.key?.fromMe===false)continue;
+     const code=event?.update?.status;
+     this.deliveryTracker.observe(event?.key?.remoteJid,event?.key?.id,code);
+    }
+   });
+   // Recebimentos em grupo podem indicar apenas UM participante, nao todos.
+   socket.ev.on('message-receipt.update',updates=>{
+    if(generation!==this.generation)return;
+    for(const event of Array.isArray(updates)?updates:[]){
+     if(event?.key?.fromMe===false)continue;
+     const r=event?.receipt||{};
+     const code=r.readTimestamp!=null?4:(r.receiptTimestamp!=null||r.deliveredTimestamp!=null?3:null);
+     if(code!=null)this.deliveryTracker.observe(event?.key?.remoteJid,event?.key?.id,code);
+    }
+   });
+   socket.ev.on('creds.update',()=>{
    if(generation!==this.generation)return;
    this.credentialFlush=this.credentialFlush.catch(()=>{}).then(()=>saveCreds());
    this.credentialFlush.catch(e=>{this.lastError='Falha ao salvar sessão em Z:. Verifique permissões do disco.';audit('credenciais_erro',{error:e.message});});
@@ -109,7 +129,7 @@ export class WhatsAppBridge {
    this.lastError=null;this.retries=0;this.lastDisconnectCode=null;audit('whatsapp_conectado');
   }
   if(connection==='close'){
-   this.socket=null;this.qr=null;this.qrCreatedAt=null;this.lastGroups=[];this.groupMetadata.clear();this.mediaCache.clear();
+   this.socket=null;this.qr=null;this.qrCreatedAt=null;this.lastGroups=[];this.groupMetadata.clear();this.mediaCache.clear();this.deliveryTracker.clear();
    const code=lastDisconnect?.error?.output?.statusCode??null;
    this.lastDisconnectCode=code;
    const plan=connectionPlan(code,this.retries);
@@ -172,7 +192,8 @@ export class WhatsAppBridge {
   this.qr=null;this.qrCreatedAt=null;this.status='desconectado';
   audit('whatsapp_desconectado_ao_fechar');
  }
- async send(groupId,imagePath,caption) {
+ getDeliveryStatus(groupId,messageId){return this.deliveryTracker.get(groupId,messageId);}
+  async send(groupId,imagePath,caption) {
   if(this.mode==='simulacao'){await delay(50);return {simulated:true,messageId:`sim-${Date.now()}`};}
   if(this.status!=='conectado'||!this.socket)throw new Error('WhatsApp desconectado antes de enviar.');
   if(!this.lastGroups.some(g=>g.id===groupId))throw new Error('Grupo não consta na lista verificada pelo WhatsApp.');
@@ -181,6 +202,7 @@ export class WhatsAppBridge {
   const message=typeof caption==='string'&&caption.trim()?{image,caption}:{image};
   const result=await this.socket.sendMessage(groupId,message);
   if(!result?.key?.id)throw new Error('WhatsApp não retornou identificador da mensagem. Resultado incerto.');
-  return {simulated:false,messageId:result.key.id};
+  const receipt=this.deliveryTracker.observe(groupId,result.key.id,Number.isInteger(result.status)?result.status:1);
+   return {simulated:false,messageId:result.key.id,deliveryStatus:receipt?.deliveryStatus||'aguardando_servidor'};
  }
 }

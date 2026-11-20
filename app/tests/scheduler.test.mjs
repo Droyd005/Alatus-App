@@ -22,8 +22,8 @@ test('desligar elimina horario futuro; reiniciar nao acumula disparos perdidos',
  s=pauseSchedule(s,'falha de conexao');
  assert.equal(s.enabled,false);assert.equal(scheduleDue(s,t+400*60_000),false);
 });
-test('rejeita intervalos perigosos e tipos invalidos',()=>{
- for(const intervalMinutes of [0,1,5,19,1441,20.5,'20',null])assert.throws(()=>validateScheduleInput({enabled:true,intervalMinutes}),{status:422});
- assert.deepEqual(validateScheduleInput({enabled:true,intervalMinutes:20}),{enabled:true,intervalMinutes:20});
+test('aceita intervalos positivos sem teto artificial e rejeita entradas invalidas',()=>{
+ for(const intervalMinutes of [0,-1,20.5,'20',null,Number.MAX_SAFE_INTEGER])assert.throws(()=>validateScheduleInput({enabled:true,intervalMinutes}),{status:422});
+ for(const minutes of [1,5,20,1441,10080])assert.deepEqual(validateScheduleInput({enabled:true,intervalMinutes:minutes},t),{enabled:true,intervalMinutes:minutes});
  assert.deepEqual(validateScheduleInput({enabled:false,intervalMinutes:1440}),{enabled:false,intervalMinutes:1440});
 });

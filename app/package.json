@@ -1,13 +1,13 @@
 {
   "name": "alatus-painel",
-  "version": "0.8.3",
+  "version": "0.8.4",
   "private": true,
   "type": "module",
   "description": "Painel local ALATUS com leitura OCR, legenda automatica e envio explicito para grupos selecionados",
   "scripts": {
     "start": "node server.mjs",
     "test": "node --test --test-concurrency=1 tests/*.test.mjs",
-    "check": "node --check server.mjs && node --check src/wa.mjs && node --check src/media-cache.mjs && node --check src/queue.mjs && node --check src/core.mjs && node --check src/ocr.mjs && node --check public/app.js && node --check src/outbox.mjs && node --check src/scheduler.mjs"
+    "check": "node --check server.mjs && node --check src/wa.mjs && node --check src/media-cache.mjs && node --check src/queue.mjs && node --check src/core.mjs && node --check src/ocr.mjs && node --check public/app.js && node --check src/outbox.mjs && node --check src/scheduler.mjs && node --check src/delivery.mjs"
   },
   "dependencies": {
     "baileys": "7.0.0-rc14",
