@@ -28,13 +28,13 @@ test('upload valida assinatura de arquivo real e tamanho',()=>{
  assert.throws(()=>core.imageUpload('data:image/png;base64,'+'a'.repeat(11_200_004),'grande.png',images),/8 MB/);
 });
 
-test('exige grupos e legenda com texto fixo (sem senha nem confirmação extra)',()=>{
+test('exige grupos mas permite legenda personalizada sem frases obrigatórias',()=>{
  const im={id:randomUUID()};const groups=[{id:'teste@g.us',name:'Teste'}];
  const b={imageId:im.id,origin:'Origem',destination:'Destino',vehicle:'Refrigerado',caption:'Valores a negociar — (11) 91234-5678',groupIds:['teste@g.us'],requestId:randomUUID()};
  assert.equal(core.validateSend(b,[im],groups).requestId,b.requestId);
  assert.equal(core.validateSend({...b,origin:''},[im],groups).origin,'');
  assert.equal(core.validateSend({...b,caption:''},[im],groups).caption,'');
- assert.throws(()=>core.validateSend({...b,caption:'sem contato'},[im],groups),/contato cadastrado/);
+ assert.equal(core.validateSend({...b,caption:'📣 Frete especial\nA combinar'},[im],groups).caption,'📣 Frete especial\nA combinar');
  assert.throws(()=>core.validateSend({...b,groupIds:['outro@g.us']},[im],groups),/desatualizada/);
  assert.throws(()=>core.validateSend({...b,groupIds:['teste@g.us','teste@g.us']},[im],groups),/sem repetir grupos/);
 });

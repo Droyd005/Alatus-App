@@ -28,7 +28,7 @@ test('interface utiliza OCR automático com peso opcional e sem interruptores',(
  assert.doesNotMatch(js,/\$\('useOcr'\)/);
  assert.doesNotMatch(js,/\$\('includeCaption'\)/);
  assert.match(js,/void pollOcr\(id\)/);
- assert.match(js,/const complete=syncCaption\(true\)/);
+ assert.match(js,/const complete=customCaption \? true : syncCaption\(true\)/);
  assert.match(js,/\$\('weight'\)\.value=d\.weight\|\|''/);
 });
 

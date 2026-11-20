@@ -25,5 +25,5 @@ test('OCR e legenda são automáticos, sem interruptores e com campo de peso',()
  assert.ok(!js.includes("$('useOcr')"));
  assert.ok(!js.includes("$('includeCaption')"));
  assert.match(js,/void pollOcr\(id\)/);
- assert.match(js,/const complete=syncCaption\(true\)/);
+ assert.match(js,/const complete=customCaption \? true : syncCaption\(true\)/);
 });

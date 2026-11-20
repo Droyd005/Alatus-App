@@ -28,7 +28,7 @@ async function loadProfile(){
  $('companyName').value=profile.company||'';$('companyPhone').value=profile.phone||'';
 
  $('companySettings').open=!profile.configured;
- message('profileStatus',profile.configured?'Perfil configurado para esta instalação.':'Antes do primeiro envio, cadastre empresa e telefone.',profile.configured?'ok':'warning');
+ message('profileStatus',profile.configured?'Perfil configurado para esta instalação.':'Você pode escrever uma legenda manual sem cadastrar o perfil.',profile.configured?'ok':'warning');
  if(!customCaption)syncCaption(true);
 }
 async function saveProfile(){try{
@@ -58,9 +58,10 @@ async function pollOcr(id){
     const d=ocr.data||{};
     if(id!==imageId||seq!==ocrSeq)return;
     $('origin').value=d.origin||'';$('destination').value=d.destination||'';$('vehicle').value=d.vehicle||'';$('weight').value=d.weight||'';
-    customCaption=false;
-    const complete=syncCaption(true);
-    if(complete){message('ocrStatus',ocr.method==='ordem_da_arte'?'Legenda gerada automaticamente pela leitura da imagem. A sequência de cidades foi interpretada pela posição na arte; confira os dados acima.':'Legenda gerada automaticamente! Confira os dados detectados antes de usar.','ok');}
+    // Um OCR atrasado nao pode apagar uma legenda que o operador ja editou.
+    const complete=customCaption ? true : syncCaption(true);
+    if(customCaption){message('ocrStatus','Leitura da imagem concluída. Sua legenda personalizada foi preservada.','ok');}
+    else if(complete){message('ocrStatus',ocr.method==='ordem_da_arte'?'Legenda gerada automaticamente pela leitura da imagem. A sequência de cidades foi interpretada pela posição na arte; confira os dados acima.':'Legenda gerada automaticamente! Confira os dados detectados antes de usar.','ok');}
     else message('ocrStatus','OCR parcial: '+(ocr.missing||[]).join(', ')+'. A imagem será enviada sem legenda, a menos que você complete os dados.','warning');
     return;
    }
@@ -118,12 +119,11 @@ async function startOutbox(){
 }
 async function repeatOutbox(){
  if(isBusy||activeBatchId||activeJobId)return;
- const items=cachedOutbox;
- if(!items.length||items.some(x=>!['simulado','submetido'].includes(x.status))){
-  message('outboxStatus','Finalize ou revise as cargas pendentes antes de repetir a fila completa.','warning');return;
- }
+ const items=cachedOutbox.filter(x=>['simulado','submetido'].includes(x.status));
+ if(!items.length){message('outboxStatus','Não há cargas concluídas aptas para reenvio. As cargas incertas permanecem em revisão.','warning');return;}
+ const excluded=cachedOutbox.length-items.length;
  const total=items.reduce((n,item)=>n+item.groupIds.length,0);
- if(!confirm(`Reenviar ${items.length} arte(s) para ${total} grupo(s) no total?\n\nEste comando iniciará uma NOVA rodada de publicações. As mensagens já enviadas serão publicadas novamente somente após sua confirmação.`))return;
+ if(!confirm(`Reenviar ${items.length} arte(s) concluída(s) para ${total} grupo(s) no total?${excluded?`\n\n${excluded} carga(s) pendente(s) ou em revisão serão ignoradas.`:''}\n\nEste comando iniciará uma NOVA rodada apenas das cargas elegíveis.`))return;
  isBusy=true;$('repeatOutbox').disabled=true;
  try{
   const data=await post('/api/outbox/start',{repeat:true,confirm:'REPETIR FILA'});
@@ -137,8 +137,8 @@ async function loadOutbox(){
   const data=await api('/api/outbox');activeBatchId=data.activeBatchId;
   if(data.lastBatchError)message('outboxStatus','Falha do lote: '+data.lastBatchError,'bad');
   const items=data.items||[],pending=items.filter(i=>i.status==='pendente');cachedOutbox=items;
-  $('startOutbox').disabled=!!activeBatchId||!!activeJobId||isBusy||!pending.length||!!data.uncertainSendBlock;
-  $('repeatOutbox').disabled=!!activeBatchId||!!activeJobId||isBusy||!items.length||items.some(i=>!['simulado','submetido'].includes(i.status))||!!data.uncertainSendBlock;
+  $('startOutbox').disabled=!!activeBatchId||!!activeJobId||isBusy||!pending.length;
+  $('repeatOutbox').disabled=!!activeBatchId||!!activeJobId||isBusy||!items.some(i=>['simulado','submetido'].includes(i.status));
   $('addToOutbox').disabled=!!activeBatchId||isBusy;
   $('cancelOutbox').classList.toggle('hidden',!activeBatchId);
   $('clearOutbox').disabled=!!activeBatchId||!items.some(i=>['simulado','submetido','interrompido_pelo_usuario'].includes(i.status));
@@ -147,7 +147,9 @@ async function loadOutbox(){
    $('outboxProgress').textContent=`Lote ativo: ${done} carga(s) iniciada(s), ${progress} grupo(s) processado(s). Você pode interromper os próximos envios.`;}
   const target=$('outboxItems');target.replaceChildren();
   if(!items.length){const empty=document.createElement('p');empty.className='muted';empty.textContent='Nenhuma carga na fila. Importe uma arte e clique em Adicionar esta carga à fila.';target.append(empty);return;}
-  const summary=document.createElement('p');summary.className='muted';summary.textContent=`${pending.length} pendente(s) • ${items.length} carga(s) salvas${items.length&&!pending.length&&items.every(i=>['simulado','submetido'].includes(i.status))?' • Pronta para reenviar':''}`;target.append(summary);
+  const reviewCount=items.filter(i=>i.status==='revisar_manualmente').length;
+  const eligibleCount=items.filter(i=>['simulado','submetido'].includes(i.status)).length;
+  const summary=document.createElement('p');summary.className='muted';summary.textContent=`${pending.length} pendente(s) • ${reviewCount} em revisão • ${eligibleCount} apta(s) para reenviar • ${items.length} carga(s) salvas`;target.append(summary);
   for(const [index,item] of items.entries()){
    const box=document.createElement('div');box.className='outbox-item';
    const thumb=document.createElement('img');thumb.className='outbox-thumb';thumb.alt='Prévia da carga';thumb.src='/api/image/'+encodeURIComponent(item.imageId);
@@ -158,6 +160,22 @@ async function loadOutbox(){
    info.append(title,details,destinations);
    if(item.error){const err=document.createElement('div');err.className='bad';err.textContent=item.error;info.append(err);}
    for(const result of item.results||[]){const line=document.createElement('div');line.className='muted';line.textContent=`• ${result.groupName}: ${result.status}${result.status==='submetido'?' | '+deliveryText(result):''}`;info.append(line);}
+   // Um status incerto nunca autoriza nova tentativa ao mesmo grupo.
+   // Grupos sabidamente nao tentados podem ser separados em uma NOVA carga pendente.
+   const attempted=new Set((item.results||[]).map(x=>x.groupId));
+   const safeUnsent=[...new Set(item.unsentGroupIds||[])].filter(id=>item.groupIds.includes(id)&&!attempted.has(id));
+   if(item.status==='revisar_manualmente'&&safeUnsent.length&&!items.some(x=>x.sourceItemId===item.id)){
+    const prepare=document.createElement('button');prepare.type='button';prepare.className='btn secondary outbox-remove';
+    prepare.textContent=`Preparar ${safeUnsent.length} não tentado(s)`;prepare.disabled=!!activeBatchId;
+    prepare.addEventListener('click',async()=>{
+     if(!confirm(`Preparar somente ${safeUnsent.length} grupo(s) que NÃO tiveram tentativa de envio?\n\nOs grupos com envio incerto ficarão em revisão. A nova carga só será enviada depois de iniciar a fila.`))return;
+     try{
+      const result=await post('/api/outbox/continue-unsent',{id:item.id,confirm:'PREPARAR NAO TENTADOS'});
+      message('outboxStatus',`${result.preparedGroups} grupo(s) não tentado(s) preparado(s). Use Iniciar envio da fila quando quiser.`, 'ok');await loadOutbox();
+     }catch(e){message('outboxStatus',e.message,'bad');}
+    });
+    info.append(prepare);
+   }
    const remove=document.createElement('button');remove.type='button';remove.className='btn secondary outbox-remove';remove.textContent='Remover';remove.disabled=!!activeBatchId;
    remove.addEventListener('click',async()=>{try{await post('/api/outbox/remove',{id:item.id});await loadOutbox();}catch(e){message('outboxStatus',e.message,'bad');}});
    box.append(thumb,info,remove);target.append(box);
@@ -216,7 +234,7 @@ async function updateStatus(){try{const s=await api('/api/status');setMode(s.mod
 async function loadGroups(){message('groupStatus','Consultando grupos…');try{const ret=await api('/api/groups');groups=ret.groups||[];renderGroups();message('groupStatus',`${groups.length} grupo(s) encontrado(s).`,'ok');}catch(e){groups=[];renderGroups();message('groupStatus',e.message,'bad');}}
 async function loadJobs(){try{const data=await api('/api/jobs');
  activeJobId=data.activeJobId||null;
- $('send').disabled=!!activeJobId||!!activeBatchId||isBusy||!!data.uncertainSendBlock;
+ $('send').disabled=!!activeJobId||!!activeBatchId||isBusy;
   $('clearJobs').disabled=!!activeJobId||!!activeBatchId||isBusy||!data.jobs.some(j=>['simulado','submetido','interrompido_pelo_usuario'].includes(j.status));
  $('cancelSend').classList.toggle('hidden',!activeJobId);
  if(activeJobId){const job=data.jobs.find(j=>j.id===activeJobId);
@@ -224,7 +242,7 @@ async function loadJobs(){try{const data=await api('/api/jobs');
   $('queueProgress').textContent=`Fila em execução: ${job?.progress?.done??0} de ${job?.progress?.total??'?'} grupos processados. Envio em até 3 grupos em paralelo, sem repetição automática de erros. Ao fechar o aplicativo, os próximos envios serão interrompidos.`;
  }else{
   $('queueProgress').classList.add('hidden');
-  if(data.uncertainSendBlock)message('sendStatus','Envio bloqueado após timeout incerto. Confira o WhatsApp e reinicie o servidor.','bad');
+  if(data.uncertainSendBlock)message('sendStatus','Houve timeout em uma tentativa anterior. Confira o grupo afetado antes de criar novas publicações; o registro incerto não será repetido automaticamente.','warning');
  }
  $('history').replaceChildren();for(const j of data.jobs){const div=document.createElement('div');div.className='history';
   const summary=document.createElement('div');summary.className='job-status';summary.textContent=`${new Date(j.createdAt).toLocaleString('pt-BR')} | ${j.mode} | ${j.status}${j.progress?' | '+j.progress.done+'/'+j.progress.total:''}`;div.append(summary);

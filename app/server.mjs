@@ -125,7 +125,6 @@ function queueOcr(id,force=false){
 // Inicia uma rodada manual ou programada usando a mesma protecao contra duplicacao.
 async function startOutboxBatch({repeat=false,automated=false,recovery=false}={}){
  if(busy||startingOutbox)throw fail(409,'Ja existe um envio ativo.');
- if(uncertainSendBlock&&!automated)throw fail(409,'Envio anterior com resultado incerto. Confira no WhatsApp antes de outra rodada.');
  startingOutbox=true;
  let ids,knownGroups;
  try{
@@ -137,9 +136,9 @@ async function startOutboxBatch({repeat=false,automated=false,recovery=false}={}
    const allowed=new Set(knownGroups.map(g=>g.id));
    if(ids.some(id=>outbox.find(x=>x.id===id).retryGroupIds.some(g=>!allowed.has(g))))throw fail(409,'Grupo de recuperacao nao disponivel; verificar conexao.');
   }else if(repeat){
-   const candidates=automated?outbox.filter(item=>REPEATABLE_STATUSES.has(item.status)):outbox;
-   if(!candidates.length||(!automated&&outbox.some(item=>!REPEATABLE_STATUSES.has(item.status))))
-    throw fail(422,'Nenhuma carga confirmada disponivel para repeticao segura.');
+   // Uma carga incerta nao deve impedir a repeticao das outras, ja concluidas.
+   const candidates=outbox.filter(item=>REPEATABLE_STATUSES.has(item.status));
+   if(!candidates.length)throw fail(422,'Nenhuma carga concluida disponivel para repeticao segura. Cargas incertas nao serao repetidas.');
    for(const item of candidates){const img=imageRecord(item.imageId);if(!fs.existsSync(path.join(DIR.images,img.file)))throw fail(409,'Imagem salva nao encontrada.');}
    knownGroups=await bridge.groups();
    ids=prepareRepeat(candidates,knownGroups);
@@ -195,8 +194,14 @@ async function startOutboxBatch({repeat=false,automated=false,recovery=false}={}
      }
      if(!item.retryGroupIds?.length && (item.error?.startsWith('Falha confirmada:')||item.error?.startsWith('Grupos sem envio por desconexao')))delete item.error;
      if(outcome.timedOut){uncertainSendBlock=true;audit('lote_timeout_incertissimo',{batchId,itemId:item.id});}
-     if(outcome.uncertain||job.status==='revisar_manualmente'){updateJobs();updateOutbox();break;}
-    }catch(e){job.status='revisar_manualmente';item.status='revisar_manualmente';item.error=String(e.message||e).slice(0,300);job.error=item.error;break;}
+     if(outcome.uncertain||job.status==='revisar_manualmente'){
+      const failure=job.results.find(r=>r.status==='incerto');
+      item.error=job.error||failure?.error||'Resultado incerto; conferir o grupo antes de nova tentativa.';
+      lastBatchError=`Carga em revisao: ${item.error} As demais cargas concluidas continuam elegiveis para novas rodadas.`;
+      audit('lote_interrompido_por_incerteza',{batchId,itemId:item.id,error:item.error});
+      updateJobs();updateOutbox();break;
+     }
+    }catch(e){job.status='revisar_manualmente';item.status='revisar_manualmente';item.error=String(e.message||e).slice(0,300);job.error=item.error;lastBatchError='Carga em revisao: '+item.error;break;}
     finally{updateJobs();updateOutbox();activeJobId=null;}
    }
   }catch(e){lastBatchError=String(e.message||e).slice(0,300);audit('lote_falha_interna',{batchId,error:lastBatchError});}
@@ -209,8 +214,6 @@ async function startOutboxBatch({repeat=false,automated=false,recovery=false}={}
     else if(autoSchedule.enabled){
      autoSchedule.lastResult=lastBatchError
       ?'Erro temporario; nova verificacao no proximo horario: '+lastBatchError
-      :outbox.some(item=>item.status==='revisar_manualmente')
-      ?'Programacao ativa. Itens com resultado incerto exigem revisao e nao serao repetidos.'
       :recovery?'Reenvio seletivo concluido. Proxima rodada agendada.'
       :'Rodada concluida. Proxima rodada agendada.';
     }
@@ -363,6 +366,27 @@ async function request(req,res){
    const removed=outbox.splice(i,1)[0];updateOutbox();audit('carga_removida_da_fila',{id:removed.id,status:removed.status});
    return json(res,200,{removedId:removed.id});
   }
+  if(req.method==='POST'&&pathname==='/api/outbox/continue-unsent'){
+   if(busy||startingOutbox)throw fail(409,'Aguarde a conclusao do lote ativo.');
+   const request=await body(req,2000);
+   if(request.confirm!=='PREPARAR NAO TENTADOS')throw fail(422,'Confirme a preparacao dos grupos nao tentados.');
+   const original=outbox.find(x=>x.id===request.id);
+   if(!original||original.status!=='revisar_manualmente')throw fail(422,'Carga nao esta em revisao.');
+   if(outbox.some(x=>x.sourceItemId===original.id))throw fail(409,'Ja existe uma carga preparada a partir deste resultado incerto.');
+   const attempted=new Set((original.results||[]).map(x=>x.groupId));
+   // Apenas destinatarios explicitamente marcados como nao tentados, nunca a falha incerta.
+   const unsent=[...new Set(original.unsentGroupIds||[])].filter(id=>original.groupIds.includes(id)&&!attempted.has(id));
+   if(!unsent.length)throw fail(422,'Nenhum grupo comprovadamente nao tentado disponivel. Confira o WhatsApp.');
+   const available=await bridge.groups();
+   if(unsent.some(id=>!available.some(g=>g.id===id)))throw fail(409,'Alguns grupos nao estao mais disponiveis. Atualize o WhatsApp.');
+   const record={image:{id:original.imageId},origin:original.origin,destination:original.destination,vehicle:original.vehicle,
+    weight:original.weight||'',caption:original.caption,groupIds:unsent,requestId:randomUUID()};
+   const item=enqueueItem(record,outbox,available,jobs);
+   item.sourceItemId=original.id;
+   updateOutbox();
+   audit('nao_tentados_preparados',{sourceItemId:original.id,itemId:item.id,groups:unsent.length});
+   return json(res,201,{item,preparedGroups:unsent.length});
+  }
   if(req.method==='POST'&&pathname==='/api/outbox/clear'){
    if(busy||startingOutbox)throw fail(409,'Não limpe a fila durante envios.');
    const count=clearCompleted(outbox);updateOutbox();return json(res,200,{removed:count});
@@ -380,8 +404,9 @@ async function request(req,res){
     if(cfg.enabled===true){
      if(cfg.confirm!=='ATIVAR AUTOMATICO')throw fail(422,'Confirme a ativacao do envio programado.');
      if(!outbox.length)throw fail(422,'Cadastre imagens e grupos na fila antes de ativar.');
-     if(outbox.some(x=>!x.groupIds?.length || !['pendente',...REPEATABLE_STATUSES].includes(x.status)))throw fail(422,'Revise a fila antes de ativar o agendamento.');
-     if(!outbox.every(x=>x.status==='pendente')&&!outbox.every(x=>REPEATABLE_STATUSES.has(x.status)))throw fail(422,'A fila precisa estar inteiramente pendente ou concluida para agendar.');
+     const eligible=outbox.filter(x=>x.status==='pendente'||REPEATABLE_STATUSES.has(x.status));
+     if(!eligible.length)throw fail(422,'Nenhuma carga apta para agendamento. Cargas incertas exigem revisao.');
+     if(eligible.some(x=>!x.groupIds?.length))throw fail(422,'Revise os grupos das cargas aptas antes de agendar.');
     }
     autoSchedule=changeSchedule(autoSchedule,cfg);saveSchedule();
     audit('agendamento_alterado',{enabled:autoSchedule.enabled,intervalMinutes:autoSchedule.intervalMinutes});
@@ -402,7 +427,6 @@ async function request(req,res){
   }
   if(req.method==='POST'&&pathname==='/api/send'){
    if(busy||startingOutbox)throw fail(409,'Já existe uma fila de envio em andamento.');
-   if(uncertainSendBlock)throw fail(409,'Bloqueado após timeout incerto. Verifique no WhatsApp e reinicie o servidor antes de uma nova publicação.');
    const b=await body(req,24_000);
    if(busy||startingOutbox)throw fail(409,'Já existe uma fila de envio em andamento.');
    const record=validateSend(b,images,lastGroups);
