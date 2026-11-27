@@ -17,7 +17,7 @@ export function markConfirmedFailure(item,groupId,messageId){
  pending.add(groupId);item.retryGroupIds=[...pending];return true;
 }
 export function pendingRecovery(items){
- return items.filter(item=>['submetido','simulado'].includes(item.status)&&item.retryGroupIds?.length>0);
+ return items.filter(item=>['submetido','simulado','parcial_revisao'].includes(item.status)&&item.retryGroupIds?.length>0);
 }
 
 export function queueDefinitelyUnsent(item,ids){

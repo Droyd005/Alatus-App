@@ -7,7 +7,7 @@ import {APP_PORT, ROOT, DIR, DATA, setupDirs, loadJson, saveJson, audit, fail, i
 import {recognizeImage} from './src/ocr.mjs';
 import {WhatsAppBridge} from './src/wa.mjs';
 import {processPublicationQueue} from './src/queue.mjs';
-import {enqueueItem, recoverOutbox, batchSnapshot, clearCompleted, prepareRepeat, REPEATABLE_STATUSES} from './src/outbox.mjs';
+import {enqueueItem, recoverOutbox, batchSnapshot, clearCompleted, prepareRepeat, REPEATABLE_STATUSES, activeGroupIds} from './src/outbox.mjs';
 import {newSchedule,changeSchedule,scheduleDue,reschedule,pauseSchedule} from './src/scheduler.mjs';
 import {markAttemptAccepted,markConfirmedFailure,pendingRecovery,queueDefinitelyUnsent} from './src/recovery.mjs';
 
@@ -91,7 +91,7 @@ function text(res,code,data,mime='text/plain; charset=utf-8'){res.writeHead(code
 async function body(req,limit=11_800_000){let buffer=[],total=0;for await (const chunk of req){total+=chunk.length;if(total>limit)throw fail(413,'Dados grandes demais. Limite: imagem de 8 MB.');buffer.push(chunk);}try{return JSON.parse(Buffer.concat(buffer).toString('utf8'));}catch{throw fail(400,'JSON inválido.');}}
 function isValidWrite(req){const origin=req.headers.origin;const expected=`http://${host}:${port}`;return origin===expected&&req.headers['x-alatus-request']==='1';}
 function imageRecord(id){const rec=images.find(im=>im.id===id);if(!rec)throw fail(404,'Imagem não encontrada.');return rec;}
-function groupSafelist(list) {return list.map(g=>({id:g.id,name:g.name,demo:g.demo===true}));}
+function groupSafelist(list) {return list.map(g=>({id:g.id,name:g.name,demo:g.demo===true,permission:g.permission||'desconhecido'}));}
 function addJobs(job){jobs.push(job);saveJson(DATA.jobs,jobs);}
 function updateJobs(){saveJson(DATA.jobs,jobs);}
 function updateOutbox(){saveJson(DATA.outbox,outbox);}
@@ -137,11 +137,14 @@ async function startOutboxBatch({repeat=false,automated=false,recovery=false}={}
    if(ids.some(id=>outbox.find(x=>x.id===id).retryGroupIds.some(g=>!allowed.has(g))))throw fail(409,'Grupo de recuperacao nao disponivel; verificar conexao.');
   }else if(repeat){
    // Uma carga incerta nao deve impedir a repeticao das outras, ja concluidas.
-   const candidates=outbox.filter(item=>REPEATABLE_STATUSES.has(item.status));
+   const candidates=outbox.filter(item=>REPEATABLE_STATUSES.has(item.status)&&activeGroupIds(item).length>0);
    if(!candidates.length)throw fail(422,'Nenhuma carga concluida disponivel para repeticao segura. Cargas incertas nao serao repetidas.');
    for(const item of candidates){const img=imageRecord(item.imageId);if(!fs.existsSync(path.join(DIR.images,img.file)))throw fail(409,'Imagem salva nao encontrada.');}
    knownGroups=await bridge.groups();
    ids=prepareRepeat(candidates,knownGroups);
+   // Evita reutilizar referencia criptografada de uma foto em outra rodada
+   // programada. O envio manual permanece inalterado.
+   if(automated)bridge.mediaCache?.clear();
    updateOutbox();
    audit('lote_reutilizado',{items:ids.length,groups:candidates.reduce((n,x)=>n+x.groupIds.length,0),automated});
   }else{
@@ -160,7 +163,9 @@ async function startOutboxBatch({repeat=false,automated=false,recovery=false}={}
     if(cancelActiveJob||serverShuttingDown)break;
     const item=outbox.find(x=>x.id===id);
     if(!item||(recovery?!REPEATABLE_STATUSES.has(item.status):item.status!=='pendente'))continue;
-    const targetGroupIds=recovery?[...(item.retryGroupIds||[])]:item.groupIds;
+    const targetGroupIds=recovery?[...(item.retryGroupIds||[])]:activeGroupIds(item);
+    // Grupos isolados por erro incerto nao sao incluidos em rodadas futuras.
+    // A liberacao exige nova selecao/confirmacao explicita pelo operador.
     if(!targetGroupIds.length)continue;
     if(targetGroupIds.some(groupId=>!groupNames.has(groupId))){
      item.status='revisar_manualmente';item.error='Grupo indisponivel. Atualize os destinatarios.';
@@ -170,30 +175,49 @@ async function startOutboxBatch({repeat=false,automated=false,recovery=false}={}
     item.status='em_andamento';item.startedAt=new Date().toISOString();updateOutbox();
     const job={id:randomUUID(),requestId:item.requestId,mode,status:'em_andamento',createdAt:new Date().toISOString(),
      origin:item.origin,destination:item.destination,vehicle:item.vehicle,weight:item.weight||'',imageId:image.id,groupIds:targetGroupIds,
-     progress:{done:0,total:item.groupIds.length},results:[]};
+     progress:{done:0,total:targetGroupIds.length},results:[]};
     activeJobId=job.id;item.jobId=job.id;addJobs(job);
     audit('lote_carga_iniciada',{batchId,itemId:item.id,jobId:job.id,groupCount:targetGroupIds.length,automated,recovery});
     try{
      const outcome=await processPublicationQueue({job,record:{...item,groupIds:targetGroupIds,imagePath:path.join(DIR.images,image.file)},bridge,
       groupNames,isCancelRequested:()=>cancelActiveJob||serverShuttingDown,
+      concurrency:automated?1:3,continueOnKnownGroupRejection:automated,
+      freshGroupMetadata:automated,
       afterGroup:async(j,result)=>{
        reconcileJobReceipts(j);
        if(result.status==='submetido'&&result.messageId){
         markAttemptAccepted(item,result.groupId,result.messageId,result.deliveryStatus);
        }else if(result.status==='nao_enviado')queueDefinitelyUnsent(item,[result.groupId]);
+       else if(result.status==='sem_permissao'||(automated&&result.status==='incerto'&&result.errorKind==='not_acceptable')){
+        const isolated=new Set(item.quarantinedGroupIds||[]);
+        isolated.add(result.groupId);item.quarantinedGroupIds=[...isolated];
+        item.quarantineDetails={...(item.quarantineDetails||{}),[result.groupId]:{
+         error:result.error,kind:result.errorKind,at:new Date().toISOString(),jobId:job.id}};
+        audit('grupo_isolado_por_recusa',{itemId:item.id,groupId:result.groupId,reason:result.errorKind});
+       }
        item.progress={...j.progress};item.results=[...j.results];updateJobs();updateOutbox();
        audit('envio_lote_grupo',{batchId,itemId:item.id,groupId:result.groupId,status:result.status,elapsedMs:result.elapsedMs,recovery});
       }
      });
-     item.status=outcome.notSubmitted&&!outcome.uncertain?'submetido':job.status;item.results=[...job.results];item.progress={...job.progress};item.finishedAt=job.finishedAt;
+     item.status=outcome.notSubmitted&&!outcome.uncertain?'submetido':job.status;
+     // Status parcial permite repetir so os grupos saudaveis nos proximos horarios.
+     if(item.quarantinedGroupIds?.length&&!outcome.timedOut&&
+        (!outcome.uncertain||outcome.canContinue)&&
+        activeGroupIds(item).length>0){item.status='parcial_revisao';}
+     item.results=[...job.results];item.progress={...job.progress};item.finishedAt=job.finishedAt;
      if(outcome.notSubmitted&&!outcome.uncertain){queueDefinitelyUnsent(item,job.unsentGroupIds||[]);item.error='Grupos sem envio por desconexao; recuperacao agendada.';}
      item.unsentGroupIds=job.unsentGroupIds||[];
-     if(REPEATABLE_STATUSES.has(job.status)){
+     if(REPEATABLE_STATUSES.has(item.status)){
       if(recovery)item.recoveryCount=(item.recoveryCount||0)+1;
       else{item.sendCount=(Number.isInteger(item.sendCount)?item.sendCount:0)+1;item.lastSentAt=job.finishedAt;}
      }
      if(!item.retryGroupIds?.length && (item.error?.startsWith('Falha confirmada:')||item.error?.startsWith('Grupos sem envio por desconexao')))delete item.error;
      if(outcome.timedOut){uncertainSendBlock=true;audit('lote_timeout_incertissimo',{batchId,itemId:item.id});}
+     if(automated&&outcome.canContinue){
+      item.error=`${item.quarantinedGroupIds?.length||0} grupo(s) isolado(s) por falta de permissao ou resultado incerto. Outros destinatarios continuam; confira os grupos isolados.`;
+      audit('lote_continuou_com_grupo_isolado',{batchId,itemId:item.id,isolated:outcome.isolatedGroupIds.length,blocked:outcome.blockedGroupIds.length});
+      updateJobs();updateOutbox();continue;
+     }
      if(outcome.uncertain||job.status==='revisar_manualmente'){
       const failure=job.results.find(r=>r.status==='incerto');
       item.error=job.error||failure?.error||'Resultado incerto; conferir o grupo antes de nova tentativa.';
@@ -235,7 +259,7 @@ async function autoScheduleTick(){
   if(!outbox.length){autoSchedule.lastResult='Fila vazia; aguardando cargas.';saveSchedule();return;}
   const recoverable=pendingRecovery(outbox);
   const pending=outbox.some(x=>x.status==='pendente');
-  const repeatable=outbox.some(x=>REPEATABLE_STATUSES.has(x.status));
+  const repeatable=outbox.some(x=>REPEATABLE_STATUSES.has(x.status)&&activeGroupIds(x).length>0);
   if(recoverable.length&&!previousAutomaticWasRecovery){
    const data=await startOutboxBatch({recovery:true,automated:true});
    previousAutomaticWasRecovery=true;
@@ -351,7 +375,21 @@ async function request(req,res){
    audit('historico_limpo',{removed:finished.length,preserved:keep.length});
    return json(res,200,{removed:finished.length,preserved:keep.length});
   }
-  if(req.method==='POST'&&pathname==='/api/outbox/add'){
+   if(req.method==='POST'&&pathname==='/api/jobs/wipe'){
+    if(busy||startingOutbox||activeJobId||activeBatchId)throw fail(409,'Aguarde a conclusão dos envios antes de apagar todo o histórico.');
+    const request=await body(req,2000);
+    if(request?.confirm!=='APAGAR TODO O HISTORICO')throw fail(422,'Confirme explicitamente a limpeza total do histórico.');
+    const removed=jobs.length;
+    const reviewRemoved=jobs.filter(j=>j.status==='revisar_manualmente').length;
+    // A limpeza não libera IDs antigos para repetição silenciosa depois de apagar o histórico.
+    for(const job of jobs)if(job.requestId)clearedRequestIds.add(job.requestId);
+    saveJson(DATA.clearedRequestIds,[...clearedRequestIds]);
+    saveJson(DATA.jobs,[]);
+    jobs.splice(0,jobs.length);
+    audit('historico_totalmente_limpo',{removed,reviewRemoved});
+    return json(res,200,{removed,reviewRemoved,preserved:0});
+   }
+   if(req.method==='POST'&&pathname==='/api/outbox/add'){
    if(busy||startingOutbox)throw fail(409,'Aguarde o término do envio para adicionar itens.');
    const b=await body(req,24_000);const record=validateSend(b,images,lastGroups);
    if(clearedRequestIds.has(record.requestId))throw fail(409,'Esta tentativa já foi publicada anteriormente.');
@@ -404,7 +442,7 @@ async function request(req,res){
     if(cfg.enabled===true){
      if(cfg.confirm!=='ATIVAR AUTOMATICO')throw fail(422,'Confirme a ativacao do envio programado.');
      if(!outbox.length)throw fail(422,'Cadastre imagens e grupos na fila antes de ativar.');
-     const eligible=outbox.filter(x=>x.status==='pendente'||REPEATABLE_STATUSES.has(x.status));
+     const eligible=outbox.filter(x=>x.status==='pendente'||(REPEATABLE_STATUSES.has(x.status)&&activeGroupIds(x).length>0));
      if(!eligible.length)throw fail(422,'Nenhuma carga apta para agendamento. Cargas incertas exigem revisao.');
      if(eligible.some(x=>!x.groupIds?.length))throw fail(422,'Revise os grupos das cargas aptas antes de agendar.');
     }

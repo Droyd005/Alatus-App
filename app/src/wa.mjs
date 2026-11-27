@@ -9,6 +9,23 @@ import {createDeliveryTracker} from './delivery.mjs';
 // O pareamento somente termina após abrir um NOVO socket com credenciais persistidas.
 export const LOGIN_RESTART_CODE = 515;
 export const LOGGED_OUT_CODE = 401;
+// Nao presumir falta de permissao quando o Baileys devolve identificadores LID
+// que nao conseguimos comparar com a identidade conectada.
+function stableJid(value){
+ const match=String(value||'').match(/^([^@:]+)(?::\d+)?@([^@]+)$/);
+ return match?`${match[1]}@${match[2]}`:null;
+}
+export function groupPostingPermission(metadata,identity=[]){
+ if(!metadata?.announce)return {status:'permitido',reason:'grupo_aberto'};
+ const ownIds=new Set(identity.map(stableJid).filter(Boolean));
+ const participant=(metadata.participants||[]).find(p=>
+  [p.id,p.phoneNumber,p.lid].map(stableJid).some(id=>id&&ownIds.has(id)));
+ if(!participant)return {status:'desconhecido',reason:'identidade_nao_correspondida'};
+ const admin=participant.admin==='admin'||participant.admin==='superadmin'||
+  participant.isAdmin===true||participant.isSuperAdmin===true;
+ return admin?{status:'permitido',reason:'administrador'}:
+  {status:'sem_permissao',reason:'somente_administradores'};
+}
 const RETRY_DELAYS = [1200, 2500, 5000, 10000, 20000];
 function phoneFromJid(jid){
  const value=String(jid||'');
@@ -171,7 +188,11 @@ export class WhatsAppBridge {
   if(this.status!=='conectado'||!this.socket)throw new Error('Conecte o WhatsApp primeiro.');
   const raw=await this.socket.groupFetchAllParticipating();
   this.groupMetadata=new Map(Object.entries(raw).map(([jid,metadata])=>[jid,{metadata,time:Date.now()}]));
-  const groups=Object.entries(raw).filter(([jid,g])=>jid.endsWith('@g.us')&&!g.isCommunityAnnounce).map(([jid,g])=>({id:jid,name:g.subject||'Grupo sem nome',demo:false})).sort((a,b)=>a.name.localeCompare(b.name,'pt-BR'));
+  const identity=[this.socket.user?.id,this.socket.user?.lid,this.socket.authState?.creds?.me?.id,this.socket.authState?.creds?.me?.lid];
+  const groups=Object.entries(raw).filter(([jid,g])=>jid.endsWith('@g.us')&&!g.isCommunityAnnounce)
+   .map(([jid,g])=>({id:jid,name:g.subject||'Grupo sem nome',demo:false,
+    permission:groupPostingPermission(g,identity).status}))
+   .sort((a,b)=>a.name.localeCompare(b.name,'pt-BR'));
   this.lastGroups=groups;return groups;
  }
  async prepareImage(imagePath){
@@ -193,14 +214,31 @@ export class WhatsAppBridge {
   audit('whatsapp_desconectado_ao_fechar');
  }
  getDeliveryStatus(groupId,messageId){return this.deliveryTracker.get(groupId,messageId);}
-  async send(groupId,imagePath,caption) {
+  async send(groupId,imagePath,caption,{freshGroupMetadata=false}={}) {
   if(this.mode==='simulacao'){await delay(50);return {simulated:true,messageId:`sim-${Date.now()}`};}
   if(this.status!=='conectado'||!this.socket)throw Object.assign(new Error('WhatsApp desconectado antes de enviar.'),{notSubmitted:true});
   if(!this.lastGroups.some(g=>g.id===groupId))throw Object.assign(new Error('Grupo não consta na lista verificada pelo WhatsApp.'),{notSubmitted:true});
+  const identity=[this.socket.user?.id,this.socket.user?.lid,this.socket.authState?.creds?.me?.id,this.socket.authState?.creds?.me?.lid];
+  const permission=groupPostingPermission(this.groupMetadata.get(groupId)?.metadata,identity);
+  if(permission.status==='sem_permissao'){
+   // Bloqueio conhecido ANTES de sendMessage. Nao houve tentativa nem risco de duplicacao.
+   audit('grupo_sem_permissao',{groupId,reason:permission.reason});
+   throw Object.assign(new Error('Somente administradores podem enviar mensagens neste grupo.'),
+    {notSubmitted:true,skipGroup:true,errorKind:'group_permission'});
+  }
   const image=Buffer.isBuffer(imagePath)?imagePath:{url:imagePath};
   // Baileys: imagem pura (sem propriedade caption) quando usuário desativa a legenda.
   const message=typeof caption==='string'&&caption.trim()?{image,caption}:{image};
-  const result=await this.socket.sendMessage(groupId,message);
+  let result;
+  try{
+   // Nos envios agendados, busca participantes atuais em vez de confiar em cache.
+   result=await this.socket.sendMessage(groupId,message);
+  }catch(e){
+   const msg=String(e?.message||e).slice(0,160);
+   const stage=/assertSessions|createParticipantNodes|encrypt/i.test(e?.stack||'')?'sessoes_ou_criptografia':'indeterminada';
+   audit('whatsapp_falha_envio',{groupId,reason:msg,stage,automaticFreshMetadata:freshGroupMetadata});
+   throw e;
+  }
   if(!result?.key?.id)throw new Error('WhatsApp não retornou identificador da mensagem. Resultado incerto.');
   const receipt=this.deliveryTracker.observe(groupId,result.key.id,Number.isInteger(result.status)?result.status:1);
    return {simulated:false,messageId:result.key.id,deliveryStatus:receipt?.deliveryStatus||'aguardando_servidor'};

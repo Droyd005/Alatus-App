@@ -35,6 +35,13 @@ jobs:
       - name: Instalar dependencias desktop
         shell: pwsh
         run: npm install --prefix desktop --no-audit --no-fund
+      - name: Validar sintaxe do recuperador de versoes (PowerShell)
+        shell: pwsh
+        run: |
+          $tokens = $null
+          $errors = $null
+          [System.Management.Automation.Language.Parser]::ParseFile((Resolve-Path 'RECUPERAR_VERSAO.ps1'),[ref]$tokens,[ref]$errors) | Out-Null
+          if ($errors.Count -gt 0) { $errors | ForEach-Object { Write-Error $_ }; throw '[REL-07] Script de recuperacao invalido.' }
       - name: Testar backend
         shell: pwsh
         run: |
@@ -67,7 +74,7 @@ jobs:
           Write-Host "Instalador validado: $($inst[0].Name)"
       - uses: actions/upload-artifact@v4
         with:
-          name: ALATUS-Desktop-v0.8.7-TESTE
+          name: ALATUS-Desktop-v0.8.8-TESTE
           path: |
             dist/instalador/ALATUS-Instalador-*.exe
             dist/instalador/latest.yml

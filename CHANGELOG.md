@@ -1,3 +1,33 @@
+# Histórico de alterações | ALATUS Publicador de Fretes
+
+## [0.8.8] - 2026-11-20
+
+### Adicionado
+- Identificação de grupos onde somente administradores podem publicar. Grupos comprovadamente restritos ficam indisponíveis para seleção e são ignorados na fila.
+- Em rodadas automáticas, um grupo recusado não interrompe os outros destinatários autorizados; resultados incertos continuam isolados sem reenvio automático.
+- **Apagar TODO o histórico**: limpa inclusive registros `revisar_manualmente` mediante confirmação dupla, sem apagar fila, perfil, imagens ou sessão WhatsApp.
+- Registro dos IDs de tentativas antigas para manter proteção contra duplicidade mesmo após a limpeza total.
+- Ferramenta `RECUPERAR_VERSAO.ps1` e `docs/ROLLBACK.md`: recuperação a partir de uma tag estável como um novo release, com versão superior e sem reescrever a história do Git.
+
+### Mantido
+- **Versão 0.8.8**: os novos recursos foram incorporados ao pacote ainda não publicado, sem criar v0.8.9.
+- A limpeza antiga continua disponível, preservando os registros sob revisão.
+- O changelog do projeto é mantido e incrementado a cada release.
+- A limpeza total não apaga auditoria técnica em `logs/events.ndjson` nem o controle de tentativas anteriores; os dados continuam locais.
+
+## [0.8.7] - 2026-11-20
+- Legendas manuais livres, sem perfil, texto fixo ou telefone obrigatório.
+- Reenvio seletivo de cargas concluídas sem bloquear por outras em revisão.
+- Preparação de grupos comprovadamente não tentados após envio incerto.
+
+## [0.8.6] - 2026-11-20
+- Agendamento contínuo da fila e recuperação seletiva de falhas confirmadas.
+- Preservação de tentativas incertas para evitar duplicidade.
+
+---
+
+## Histórico anterior (mantido do repositório)
+
 ## 0.7.1
 - Updater via GitHub Releases na abertura, com confirmação e proteção da fila de envios.
 - Pipeline de tag valida dependências, gerador NSIS e latest.yml antes de publicar.

@@ -4,7 +4,12 @@ import {randomUUID} from 'node:crypto';
 
 export const MAX_OUTBOX_ITEMS = 100;
 export const FINISHED_STATUSES = new Set(['simulado','submetido','interrompido_pelo_usuario']);
-export const REPEATABLE_STATUSES = new Set(['simulado','submetido']);
+export const REPEATABLE_STATUSES = new Set(['simulado','submetido','parcial_revisao']);
+// Grupos com tentativa incerta continuam registrados, mas nao entram nas proximas rodadas.
+export function activeGroupIds(item){
+ const excluded=new Set(item.quarantinedGroupIds||[]);
+ return (item.groupIds||[]).filter(id=>!excluded.has(id));
+}
 export function enqueueItem(record, items, groups, jobs=[]){
  if(items.length>=MAX_OUTBOX_ITEMS)throw Object.assign(new Error('Fila cheia. Remova registros finalizados antes de incluir novas cargas.'),{status:422});
  if(items.some(x=>x.requestId===record.requestId)||jobs.some(x=>x.requestId===record.requestId))throw Object.assign(new Error('Esta carga já foi adicionada ou enviada. Confira a fila antes de repetir.'),{status:409});
@@ -39,7 +44,7 @@ export function prepareRepeat(items, groups) {
  if(!items.length || items.some(x=>!REPEATABLE_STATUSES.has(x.status)))
   throw Object.assign(new Error('Conclua ou revise todas as cargas antes de reenviar a fila completa.'),{status:422});
  const names=new Map(groups.map(x=>[x.id,x.name]));
- if(items.some(item=>!item.groupIds?.length || item.groupIds.some(id=>!names.has(id))))
+ if(items.some(item=>!activeGroupIds(item).length || activeGroupIds(item).some(id=>!names.has(id))))
   throw Object.assign(new Error('Alguns grupos não estão disponíveis no WhatsApp atual. Revise a seleção antes de reenviar.'),{status:409});
  for(const item of items){
   // Versões anteriores não armazenavam a quantidade de envios.
@@ -47,11 +52,12 @@ export function prepareRepeat(items, groups) {
   if(!item.lastSentAt)item.lastSentAt=item.finishedAt||null;
   item.requestId=randomUUID();
   item.status='pendente';
-  item.groupNames=item.groupIds.map(id=>names.get(id));
-  item.progress={done:0,total:item.groupIds.length};
+  item.groupNames=item.groupIds.map((id,i)=>names.get(id)||item.groupNames?.[i]||id);
+  item.progress={done:0,total:activeGroupIds(item).length};
   item.results=[];
   delete item.jobId;delete item.startedAt;delete item.finishedAt;
-  delete item.error;delete item.interruptedAt;
+  if(!item.quarantinedGroupIds?.length)delete item.error;
+  delete item.interruptedAt;
  }
  return items.map(x=>x.id);
 }

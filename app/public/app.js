@@ -119,10 +119,10 @@ async function startOutbox(){
 }
 async function repeatOutbox(){
  if(isBusy||activeBatchId||activeJobId)return;
- const items=cachedOutbox.filter(x=>['simulado','submetido'].includes(x.status));
+ const items=cachedOutbox.filter(x=>['simulado','submetido','parcial_revisao'].includes(x.status));
  if(!items.length){message('outboxStatus','Não há cargas concluídas aptas para reenvio. As cargas incertas permanecem em revisão.','warning');return;}
  const excluded=cachedOutbox.length-items.length;
- const total=items.reduce((n,item)=>n+item.groupIds.length,0);
+ const total=items.reduce((n,item)=>n+item.groupIds.filter(id=>!item.quarantinedGroupIds?.includes(id)).length,0);
  if(!confirm(`Reenviar ${items.length} arte(s) concluída(s) para ${total} grupo(s) no total?${excluded?`\n\n${excluded} carga(s) pendente(s) ou em revisão serão ignoradas.`:''}\n\nEste comando iniciará uma NOVA rodada apenas das cargas elegíveis.`))return;
  isBusy=true;$('repeatOutbox').disabled=true;
  try{
@@ -138,7 +138,7 @@ async function loadOutbox(){
   if(data.lastBatchError)message('outboxStatus','Falha do lote: '+data.lastBatchError,'bad');
   const items=data.items||[],pending=items.filter(i=>i.status==='pendente');cachedOutbox=items;
   $('startOutbox').disabled=!!activeBatchId||!!activeJobId||isBusy||!pending.length;
-  $('repeatOutbox').disabled=!!activeBatchId||!!activeJobId||isBusy||!items.some(i=>['simulado','submetido'].includes(i.status));
+  $('repeatOutbox').disabled=!!activeBatchId||!!activeJobId||isBusy||!items.some(i=>['simulado','submetido','parcial_revisao'].includes(i.status));
   $('addToOutbox').disabled=!!activeBatchId||isBusy;
   $('cancelOutbox').classList.toggle('hidden',!activeBatchId);
   $('clearOutbox').disabled=!!activeBatchId||!items.some(i=>['simulado','submetido','interrompido_pelo_usuario'].includes(i.status));
@@ -147,15 +147,20 @@ async function loadOutbox(){
    $('outboxProgress').textContent=`Lote ativo: ${done} carga(s) iniciada(s), ${progress} grupo(s) processado(s). Você pode interromper os próximos envios.`;}
   const target=$('outboxItems');target.replaceChildren();
   if(!items.length){const empty=document.createElement('p');empty.className='muted';empty.textContent='Nenhuma carga na fila. Importe uma arte e clique em Adicionar esta carga à fila.';target.append(empty);return;}
-  const reviewCount=items.filter(i=>i.status==='revisar_manualmente').length;
-  const eligibleCount=items.filter(i=>['simulado','submetido'].includes(i.status)).length;
+  const reviewCount=items.filter(i=>i.status==='revisar_manualmente'||i.status==='parcial_revisao').length;
+  const eligibleCount=items.filter(i=>['simulado','submetido','parcial_revisao'].includes(i.status)).length;
   const summary=document.createElement('p');summary.className='muted';summary.textContent=`${pending.length} pendente(s) • ${reviewCount} em revisão • ${eligibleCount} apta(s) para reenviar • ${items.length} carga(s) salvas`;target.append(summary);
   for(const [index,item] of items.entries()){
    const box=document.createElement('div');box.className='outbox-item';
    const thumb=document.createElement('img');thumb.className='outbox-thumb';thumb.alt='Prévia da carga';thumb.src='/api/image/'+encodeURIComponent(item.imageId);
    const info=document.createElement('div');info.className='outbox-info';
    const title=document.createElement('strong');title.textContent=item.origin&&item.destination?`${index+1}. ${item.origin} → ${item.destination}`:`${index+1}. Imagem ${item.imageId?.slice(0,8)||'sem rota'}`;
-   const details=document.createElement('div');details.className='muted';const retry=item.retryGroupIds?.length?` • ${item.retryGroupIds.length} reenvio(s) por falha confirmada na proxima programacao`:'';const times=Number.isInteger(item.sendCount)?item.sendCount:(['simulado','submetido'].includes(item.status)?1:0);details.textContent=`${item.vehicle||'Veículo não informado'} • ${item.caption?'com legenda':'imagem sem legenda'} • ${item.groupIds.length} grupos • ${item.status} • ${item.progress?.done||0}/${item.progress?.total||0} • ${times} rodada(s) concluída(s)${retry}`;
+   const details=document.createElement('div');details.className='muted';const retry=item.retryGroupIds?.length?` • ${item.retryGroupIds.length} reenvio(s) por falha confirmada na proxima programacao`:'';const times=Number.isInteger(item.sendCount)?item.sendCount:(['simulado','submetido','parcial_revisao'].includes(item.status)?1:0);details.textContent=`${item.vehicle||'Veículo não informado'} • ${item.caption?'com legenda':'imagem sem legenda'} • ${item.groupIds.length} grupos • ${item.status} • ${item.progress?.done||0}/${item.progress?.total||0} • ${times} rodada(s) concluída(s)${retry}`;
+   if(item.quarantinedGroupIds?.length){
+    const alert=document.createElement('div');alert.className='warning';
+    alert.textContent=`${item.quarantinedGroupIds.length} grupo(s) isolado(s) por falta de permissao ou tentativa incerta. A fila automatica ignora esses grupos e segue com os demais.`;
+    info.append(alert);
+   }
    const destinations=document.createElement('div');destinations.className='muted';destinations.textContent=(item.groupNames||[]).join(' · ');
    info.append(title,details,destinations);
    if(item.error){const err=document.createElement('div');err.className='bad';err.textContent=item.error;info.append(err);}
@@ -209,19 +214,19 @@ async function saveSchedule(){
  finally{$('saveSchedule').disabled=false;}
 }
 
-function updateSelectedCount(){const selected=selectedGroups().length,total=groups.length;
- $('selectedCount').textContent=`${selected} de ${total} grupo(s) selecionado(s)`;
+function updateSelectedCount(){const selected=selectedGroups().length,total=groups.filter(g=>g.permission!=='sem_permissao').length;
+ $('selectedCount').textContent=`${selected} de ${total} grupo(s) disponíveis selecionados`;
  $('selectAll').disabled=!total||selected===total;
  $('clearAll').disabled=!selected;
 }
 function renderGroups(){const container=$('groups'),previous=new Set(selectedGroups());container.replaceChildren();
  if(!groups.length){const p=document.createElement('p');p.textContent='Nenhum grupo disponível. Conecte ou atualize.';container.append(p);updateSelectedCount();return;}
- for(const g of groups){const lab=document.createElement('label');lab.className='group';const box=document.createElement('input');box.type='checkbox';box.value=g.id;box.checked=previous.has(g.id);box.addEventListener('change',updateSelectedCount);
- const span=document.createElement('span');span.textContent=g.name+(g.demo?' [TESTE]':'');lab.append(box,span);container.append(lab);}
+ for(const g of groups){const lab=document.createElement('label');lab.className='group';const box=document.createElement('input');box.type='checkbox';box.value=g.id;box.disabled=g.permission==='sem_permissao';box.checked=!box.disabled&&previous.has(g.id);box.addEventListener('change',updateSelectedCount);
+ const span=document.createElement('span');span.textContent=g.name+(g.demo?' [TESTE]':'')+(g.permission==='sem_permissao'?' [SOMENTE ADMINISTRADORES]':'');lab.append(box,span);container.append(lab);}
  updateSelectedCount();
 }
 function selectedGroups(){return [...$('groups').querySelectorAll('input:checked')].map(n=>n.value);}
-function toggleAllGroups(checked){for(const input of $('groups').querySelectorAll('input[type=checkbox]'))input.checked=checked;updateSelectedCount();}
+function toggleAllGroups(checked){for(const input of $('groups').querySelectorAll('input[type=checkbox]'))if(!input.disabled)input.checked=checked;updateSelectedCount();}
 async function updateStatus(){try{const s=await api('/api/status');setMode(s.mode);
  const labels={conectado:'WhatsApp conectado.',aguardando_qr:'Escaneie o QR em Dispositivos conectados no WhatsApp.',finalizando_pareamento:'QR lido. Finalizando pareamento automaticamente, não escaneie novamente.',reconectando:'Reconectando automaticamente…',reiniciando:'Reiniciando conexão…',conectando:'Conectando ao WhatsApp…',sessao_encerrada:'Sessão inválida. Clique em Trocar número / novo QR para conectar outra conta.',erro:'Falha na conexão. Reinicie ou veja o diagnóstico.',desconectado:'WhatsApp desconectado.'};
  $('waStatus').textContent=s.mode==='simulacao'?'SIMULAÇÃO: nenhum WhatsApp conectado. Use os grupos de teste.':(labels[s.status]||`Estado: ${s.status}.`)+(s.connectedNumber?' Número conectado: '+s.connectedNumber+'.':'')+(s.lastError?' '+s.lastError:'');
@@ -231,11 +236,12 @@ async function updateStatus(){try{const s=await api('/api/status');setMode(s.mod
  $('resetSession').disabled=s.mode==='simulacao'||!!s.activeJobId||!!s.activeBatchId;
  return s;
  }catch(e){$('waStatus').textContent=e.message;}}
-async function loadGroups(){message('groupStatus','Consultando grupos…');try{const ret=await api('/api/groups');groups=ret.groups||[];renderGroups();message('groupStatus',`${groups.length} grupo(s) encontrado(s).`,'ok');}catch(e){groups=[];renderGroups();message('groupStatus',e.message,'bad');}}
+async function loadGroups(){message('groupStatus','Consultando grupos…');try{const ret=await api('/api/groups');groups=ret.groups||[];renderGroups();const blocked=groups.filter(g=>g.permission==='sem_permissao').length;message('groupStatus',`${groups.length} grupo(s) encontrado(s). ${blocked?`${blocked} grupo(s) somente administradores foram desabilitados.`:''}`,'ok');}catch(e){groups=[];renderGroups();message('groupStatus',e.message,'bad');}}
 async function loadJobs(){try{const data=await api('/api/jobs');
  activeJobId=data.activeJobId||null;
  $('send').disabled=!!activeJobId||!!activeBatchId||isBusy;
   $('clearJobs').disabled=!!activeJobId||!!activeBatchId||isBusy||!data.jobs.some(j=>['simulado','submetido','interrompido_pelo_usuario'].includes(j.status));
+   $('clearAllJobs').disabled=!!activeJobId||!!activeBatchId||isBusy||!data.jobs.length;
  $('cancelSend').classList.toggle('hidden',!activeJobId);
  if(activeJobId){const job=data.jobs.find(j=>j.id===activeJobId);
   $('queueProgress').classList.remove('hidden');
@@ -293,6 +299,18 @@ $('cancelSend').addEventListener('click',async()=>{if(!activeJobId)return;try{aw
    await loadJobs();message('historyStatus',`${result.removed} registro(s) removido(s). ${result.preserved} registro(s) de revisão preservado(s).`,'ok');
   }catch(e){message('historyStatus',e.message,'bad');await loadJobs();}
  });
+$('clearAllJobs').addEventListener('click',async()=>{
+ if(activeBatchId||activeJobId||isBusy){message('historyStatus','Aguarde o término dos envios antes de apagar todo o histórico.','warning');return;}
+ if(!confirm('ATENÇÃO: apagar TODOS os registros do histórico, inclusive os que estão em revisão e com envio incerto?\n\nEsta operação não pode ser desfeita pelo aplicativo. A fila salva, as imagens e a sessão WhatsApp NÃO serão apagadas.'))return;
+ if(prompt('Confirme a limpeza total digitando APAGAR:','')!=='APAGAR'){
+  message('historyStatus','Limpeza total cancelada: confirmação incorreta.','warning');return;
+ }
+ $('clearAllJobs').disabled=true;
+ try{
+  const result=await post('/api/jobs/wipe',{confirm:'APAGAR TODO O HISTORICO'});
+  await loadJobs();message('historyStatus',`${result.removed} registro(s) apagado(s), incluindo ${result.reviewRemoved} em revisão. Fila e sessão preservadas.`,'ok');
+ }catch(e){message('historyStatus',e.message,'bad');await loadJobs();}
+});
 $('reloadJobs').addEventListener('click',loadJobs);$('send').addEventListener('click',publish);
 $('saveSchedule').addEventListener('click',saveSchedule);
 $('addToOutbox').addEventListener('click',addToOutbox);$('startOutbox').addEventListener('click',startOutbox);$('repeatOutbox').addEventListener('click',repeatOutbox);
